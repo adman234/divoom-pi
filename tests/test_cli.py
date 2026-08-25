@@ -8,11 +8,14 @@ fine by hand, so the unit's own command line is now checked against the real
 parser.
 """
 
+import contextlib
+import io
 import os
 import shlex
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -56,6 +59,16 @@ class SystemdUnitTest(unittest.TestCase):
 
         self.assertIs(args.func, cli.command_run)
         self.assertEqual(args.config, SUBSTITUTIONS["@CONFIG@"])
+
+    def test_sandboxing_leaves_the_avahi_directory_writable(self):
+        # ProtectSystem=full mounts /etc read-only too, which stopped the
+        # gateway publishing any mDNS record - silently, because it is only a
+        # warning in its own log. Whatever the sandboxing, that one directory
+        # has to stay writable.
+        with open(UNIT, encoding="utf-8") as handle:
+            text = handle.read()
+        if "ProtectSystem=full" in text or "ProtectSystem=strict" in text:
+            self.assertIn("ReadWritePaths=/etc/avahi/services", text)
 
     def test_unit_gives_up_on_permanent_failures(self):
         # Exit code 2 means bad usage or an unsupported platform; restarting
@@ -134,6 +147,61 @@ class RunCommandOptionsTest(unittest.TestCase):
         config = cli.load_config(args)
         self.assertEqual(config.port, 7777)
         self.assertIsNone(config.path)
+
+
+class DoctorAvahiCheckTest(unittest.TestCase):
+    """/etc/avahi/services is root-owned and the gateway runs as root.
+
+    An unprivileged `divoom-pi doctor` therefore cannot tell whether the
+    service can write there, and reporting that as a failure sent a user
+    chasing a problem they did not have.
+    """
+
+    def run_doctor(self, *, euid, published, available):
+        args = cli.build_parser().parse_args(["doctor"])
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(cli.os, "geteuid", lambda: euid, create=True))
+            stack.enter_context(mock.patch("divoom_pi.cli.os.path.isdir", return_value=True))
+            stack.enter_context(mock.patch("divoom_pi.cli.os.listdir", return_value=published))
+            stack.enter_context(
+                mock.patch.object(cli.AvahiPublisher, "available", lambda self: available)
+            )
+            stack.enter_context(mock.patch("divoom_pi.cli.shutil.which", return_value=None))
+            stack.enter_context(mock.patch("divoom_pi.cli._port_open", return_value=False))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                cli.command_doctor(args)
+        return output.getvalue()
+
+    def avahi_line(self, output):
+        for line in output.splitlines():
+            if "avahi service directory" in line:
+                return line
+        self.fail("no avahi line in: " + output)
+
+    def test_unprivileged_with_no_records_warns_rather_than_fails(self):
+        output = self.run_doctor(
+            euid=1000, published=[], available="/etc/avahi/services is not writable"
+        )
+        line = self.avahi_line(output)
+        self.assertIn("[warn]", line)
+        self.assertIn("sudo", line)
+        self.assertIn("not root", output)
+
+    def test_existing_records_pass_even_unprivileged(self):
+        output = self.run_doctor(
+            euid=1000,
+            published=["divoom-pi-b12181bfa8eb.service"],
+            available="/etc/avahi/services is not writable",
+        )
+        self.assertIn("[ ok ]", self.avahi_line(output))
+
+    def test_root_still_reports_a_real_failure(self):
+        output = self.run_doctor(
+            euid=0, published=[], available="/etc/avahi/services is not writable"
+        )
+        self.assertIn("[FAIL]", self.avahi_line(output))
+        self.assertNotIn("not root", output)
 
 
 if __name__ == "__main__":

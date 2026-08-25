@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import ha_stubs  # noqa: E402  (installs the fake homeassistant modules)
-
+# Importing this installs the fake homeassistant modules, which has to happen
+# before anything under custom_components is imported.
 from ha_stubs import AbortFlow, ConfigEntry, FakeHass  # noqa: E402
 
 REPO = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()

@@ -7,7 +7,6 @@ but it does catch typos, bad names and wrong call signatures in the new code -
 which is otherwise entirely unverified.
 """
 
-import asyncio
 import sys
 import types
 from pathlib import Path

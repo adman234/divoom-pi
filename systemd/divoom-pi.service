@@ -23,11 +23,15 @@ RestartSec=5
 RestartPreventExitStatus=2
 
 # Root, because it needs raw Bluetooth sockets, BlueZ over D-Bus, and write
-# access to Avahi's service directory. ProtectSystem=full still keeps /usr
-# and /boot read-only while leaving /etc/avahi/services writable.
+# access to Avahi's service directory.
 User=root
 NoNewPrivileges=yes
+# ProtectSystem=full mounts /etc read-only as well as /usr and /boot - which
+# is easy to miss, and it silently stopped the gateway from publishing any
+# mDNS record at all, so Home Assistant never discovered anything. Avahi's
+# service directory has to be carved back out.
 ProtectSystem=full
+ReadWritePaths=/etc/avahi/services
 ProtectHome=yes
 PrivateTmp=yes
 

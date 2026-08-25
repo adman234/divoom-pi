@@ -328,7 +328,12 @@ def command_doctor(args: argparse.Namespace) -> int:
             failures.append(label)
         print("[%s] %-34s %s" % (mark, label, detail))
 
+    running_as_root = not hasattr(os, "geteuid") or os.geteuid() == 0
+
     print("divoom-pi %s" % __version__)
+    if not running_as_root:
+        print("(not root - checks that need privileges are reported as warnings;")
+        print(" for the full picture: sudo divoom-pi doctor)")
     print()
 
     check(
@@ -367,17 +372,35 @@ def command_doctor(args: argparse.Namespace) -> int:
             "" if not blocked else "try: sudo rfkill unblock bluetooth",
         )
 
-    reason = AvahiPublisher(
-        LOG, port=config.port, service_dir=config.mdns_service_dir, enabled=config.mdns_enabled
-    ).available()
-    check("avahi service directory", reason is None, reason or config.mdns_service_dir)
-
-    if os.path.isdir(config.mdns_service_dir):
+    service_dir = config.mdns_service_dir
+    published = []
+    if os.path.isdir(service_dir):
         published = sorted(
-            entry
-            for entry in os.listdir(config.mdns_service_dir)
-            if entry.startswith(FILE_PREFIX)
+            entry for entry in os.listdir(service_dir) if entry.startswith(FILE_PREFIX)
         )
+
+    reason = AvahiPublisher(
+        LOG, port=config.port, service_dir=service_dir, enabled=config.mdns_enabled
+    ).available()
+    if published:
+        # Records are there, so whoever wrote them could write here - which is
+        # the only thing that matters, whatever this shell can do.
+        check("avahi service directory", True, "%s (the service can write to it)" % service_dir)
+    elif reason is not None and not running_as_root and os.path.isdir(service_dir):
+        # /etc/avahi/services is root-owned and the gateway runs as root, so an
+        # unprivileged doctor cannot tell whether the service can write there.
+        # Reporting that as a failure sends people chasing a problem they do
+        # not have.
+        check(
+            "avahi service directory",
+            None,
+            "%s exists; run 'sudo divoom-pi doctor', or check the service's own "
+            "verdict: journalctl -u divoom-pi | grep mDNS" % service_dir,
+        )
+    else:
+        check("avahi service directory", reason is None, reason or service_dir)
+
+    if os.path.isdir(service_dir):
         check(
             "published mDNS records",
             bool(published) or None,
