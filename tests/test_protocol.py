@@ -41,12 +41,40 @@ class BuildTest(unittest.TestCase):
         # length 3 little-endian, command 0x46, checksum 0x0049 little-endian.
         self.assertEqual(protocol.ping(), bytes.fromhex("01030046490002"))
 
-    def test_light_on_matches_the_integration(self):
-        # show_light(color=[1,1,1], brightness=100, power=True) -> "set view".
+    def test_display_on_matches_send_on(self):
+        # hass-divoom's send_on(): show_light(color=[1,1,1], brightness=100,
+        # power=True). RGB (1,1,1) is near-black, which is why this looks like
+        # the display switching off rather than on.
         self.assertEqual(
-            protocol.light(power=True, brightness=100),
+            protocol.display_on(),
             bytes.fromhex("010d004501010101640001000000bb0002"),
         )
+
+    def test_display_off_matches_send_off(self):
+        self.assertEqual(
+            protocol.display_off(),
+            bytes.fromhex("010d004501010101000000000000560002"),
+        )
+
+    def test_light_without_a_colour_takes_the_white_branch(self):
+        # show_light(color=None) sends FF FF FF and a trailing 0x01 flag,
+        # instead of a custom colour and 0x00.
+        self.assertEqual(
+            protocol.light(),
+            bytes.fromhex("010d004501ffffff640101000000b60302"),
+        )
+
+    def test_light_with_a_colour_takes_the_custom_branch(self):
+        # Args start after 0x01, the two length bytes and the command byte.
+        message = protocol.light(color=(0xFF, 0x88, 0x00), brightness=50)
+        self.assertEqual(message[4:10], bytes.fromhex("01ff88003200"))
+        self.assertEqual(message[0], protocol.FRAME_START)
+        self.assertEqual(message[-1], protocol.FRAME_END)
+
+    def test_clock_matches_show_clock_defaults(self):
+        # show_clock() with everything defaulted: view 0, 12-hour, style 0,
+        # clock activated, no weather/temperature/calendar.
+        self.assertEqual(protocol.clock(), bytes.fromhex("010a004500000001000000500002"))
 
     def test_checksum_widens_past_65535(self):
         # The integration switches to a four-byte checksum once the sum no
@@ -66,6 +94,33 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(advert[1:7], bytes.fromhex("b12181bfa8eb"))
         self.assertEqual(advert[7], 5)
         self.assertEqual(advert[8:], b"Ditoo")
+
+
+class StripAdvertisementsTest(unittest.TestCase):
+    """The gateway announces devices to its clients; those are not replies."""
+
+    def setUp(self):
+        self.advert = protocol.advertisement("B1:21:81:BF:A8:EB", "DitooPro-Audio")
+
+    def test_advertisement_alone_leaves_nothing(self):
+        self.assertEqual(protocol.strip_advertisements(self.advert), b"")
+
+    def test_advertisement_followed_by_a_reply_byte(self):
+        # Exactly what a selftest saw: an announcement, then "still connecting".
+        data = self.advert + protocol.REPLY_CONNECTING
+        self.assertEqual(protocol.strip_advertisements(data), protocol.REPLY_CONNECTING)
+
+    def test_several_advertisements(self):
+        second = protocol.advertisement("AA:BB:CC:DD:EE:FF", "Pixoo")
+        self.assertEqual(protocol.strip_advertisements(self.advert + second), b"")
+
+    def test_a_real_reply_is_untouched(self):
+        reply = protocol.ping()
+        self.assertEqual(protocol.strip_advertisements(reply), reply)
+
+    def test_a_truncated_advertisement_is_left_alone(self):
+        partial = self.advert[:-4]
+        self.assertEqual(protocol.strip_advertisements(partial), partial)
 
 
 class ParserTest(unittest.TestCase):

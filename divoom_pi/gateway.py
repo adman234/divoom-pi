@@ -238,13 +238,12 @@ class Gateway(object):
             self._clients[sock.fileno()] = client
         self._selector.register(sock, selectors.EVENT_READ, self._read_client)
         self._log.info("client connected: %s", client.name)
-
-        # Tell the newcomer what we already know about, the way the firmware
-        # does after every scan.
-        with self._discovered_lock:
-            known = sorted(self._discovered.items())
-        for mac, name in known:
-            self._send_to(client, protocol.advertisement(mac, name))
+        # Deliberately silent here. Announcing the already-discovered devices
+        # to a new client seemed helpful, but the firmware only advertises
+        # after a scan, and pushing twenty-odd unsolicited bytes at a client
+        # the instant it connects drops them exactly where it is about to read
+        # for a reply - which made `divoom-pi selftest` report success on its
+        # own gateway's announcement while nothing reached the Divoom.
 
     def _read_client(self, sock: socket.socket) -> None:
         with self._clients_lock:

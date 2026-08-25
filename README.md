@@ -103,9 +103,16 @@ Now prove the whole path works, without involving Home Assistant at all:
 divoom-pi selftest B1:21:81:BF:A8:EB --channel 2 --action on
 ```
 
-This connects to the running gateway over TCP, asks it to open Bluetooth, and sends the same
-"light on" command Home Assistant sends. If your Divoom lights up, everything below Home Assistant
-is working.
+This connects to the running gateway over TCP, asks it to open Bluetooth, and lights the display
+white. If your Divoom lights up, everything below Home Assistant is working.
+
+Most Divoom commands are not acknowledged, so "nothing came back" is normal for `on`, `off` and
+`clock` - trust the display. `--action ping` sends the one command the device does answer, and
+`--action clock` puts the display back to its clock face afterwards.
+
+One to know about: `--action ha-on` sends exactly what the integration's `send_on()` sends, which
+is RGB (1, 1, 1) - very nearly black. On a Ditoo that looks like the display switching *off*. It is
+not a fault, and it is worth remembering if Home Assistant's light toggle ever seems to do nothing.
 
 **The channel matters.** It is the RFCOMM channel of the device's serial port:
 
@@ -145,7 +152,7 @@ is what creates the device and its entities.
 | `divoom-pi doctor` | Checks everything — Bluetooth, Avahi, the service, the port — and says what is wrong. Start here. |
 | `divoom-pi scan` | Scans for Bluetooth devices and flags the Divooms. |
 | `divoom-pi pair <MAC>` | Pairs with a Divoom that will not connect without it. |
-| `divoom-pi selftest <MAC> --channel N` | Does what Home Assistant does, and prints what came back. `--action on\|off\|ping`, `--direct` to bypass the gateway. |
+| `divoom-pi selftest <MAC> --channel N` | Does what Home Assistant does, and prints what came back. `--action ping\|on\|off\|clock`, `--color RRGGBB`, `--direct` to bypass the gateway. |
 | `divoom-pi run` | Runs the gateway in the foreground (what the service does). |
 
 Service management is ordinary systemd:

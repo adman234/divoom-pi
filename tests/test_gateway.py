@@ -178,10 +178,15 @@ class GatewayTest(unittest.TestCase):
         extra.settimeout(5)
         self.assertEqual(extra.recv(16), b"", "the gateway should have closed the extra client")
 
-    def test_new_clients_are_told_about_known_devices(self):
+    def test_new_clients_get_no_unsolicited_data(self):
+        # A client must be able to connect, send a command and read the answer
+        # without the gateway having pushed anything at it first - anything it
+        # does push lands in front of the reply the client is waiting for.
         self.gateway._discovered[MAC] = "Ditoo"
         sock = self.client()
-        self.assertEqual(sock.recv(64), protocol.advertisement(MAC, "Ditoo"))
+        sock.settimeout(0.5)
+        with self.assertRaises(socket.timeout):
+            sock.recv(64)
 
     def test_a_dropped_client_does_not_take_the_gateway_down(self):
         first = self.client()

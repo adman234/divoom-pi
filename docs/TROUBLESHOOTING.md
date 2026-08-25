@@ -145,6 +145,24 @@ Bluetooth side is not — go back to the connection section above, and confirm w
 device type in the Home Assistant config entry: the command set differs per model. Remove the entry
 and add it again with the right type.
 
+## The display goes dark instead of lighting up
+
+`--action ha-on`, and Home Assistant's own light "on", send `show_light(color=[1,1,1])` - RGB
+(1, 1, 1), which is all but black. The device is in light mode and lit; it is showing you almost
+no light. Nothing is broken.
+
+Use `divoom-pi selftest <MAC> --channel N --action on` for a white test (add `--color ff8800` for
+something else), and `--action clock` to put the display back to its clock face.
+
+## The selftest says nothing came back
+
+Most Divoom commands are not acknowledged at all, so for `on`, `off` and `clock` an empty reply is
+expected - the display is the real result. `--action ping` asks for the current view, which the
+device does answer, and is the one to use when you want proof the round trip works.
+
+If the reply is a single `0x69`, the Bluetooth connect had not finished yet; run it again. A single
+`0x96` means there is no Bluetooth connection at all.
+
 ## Everything worked, then stopped
 
 ```bash

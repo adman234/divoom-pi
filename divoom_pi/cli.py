@@ -171,16 +171,43 @@ def command_pair(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_color(text: Optional[str]):
+    """RRGGBB (with or without a leading #) -> a 3-tuple, or None for white."""
+    if text is None:
+        return None
+    cleaned = text.strip().lstrip("#")
+    if len(cleaned) != 6:
+        raise ValueError("a colour is six hex digits, e.g. ff8800 - got %r" % (text,))
+    return tuple(bytes.fromhex(cleaned))
+
+
+def _payload_for(args: argparse.Namespace) -> Optional[bytes]:
+    """Build the command for `divoom-pi selftest --action ...`."""
+    if args.action == "ping":
+        return protocol.ping()
+    if args.action == "clock":
+        return protocol.clock()
+    if args.action == "off":
+        return protocol.display_off()
+    if args.action == "ha-on":
+        return protocol.display_on()
+    try:
+        color = parse_color(args.color)
+    except ValueError as err:
+        print("error: %s" % err, file=sys.stderr)
+        return None
+    return protocol.light(color=color, brightness=args.brightness, power=True)
+
+
 def command_selftest(args: argparse.Namespace) -> int:
     """Do exactly what Home Assistant does, and print what comes back."""
     config = load_config(args)
     setup_logging(log_level_of(args))
 
     mac = protocol.normalize_mac(args.mac)
-    if args.action == "ping":
-        payload = protocol.ping()
-    else:
-        payload = protocol.light(power=(args.action == "on"), brightness=100 if args.action == "on" else 0)
+    payload = _payload_for(args)
+    if payload is None:
+        return 2
 
     if args.direct:
         return _selftest_direct(mac, args.channel, payload, config)
@@ -225,46 +252,59 @@ def _selftest_via_gateway(mac: str, channel: int, payload: bytes, host: str, por
 
         print("Sending: %s" % protocol.hexdump(payload))
         sock.sendall(payload)
-        result = _drain(sock, "gateway")
-        if result == 0:
-            return 0
-
-        print()
-        print("No reply. A single 0x69 byte back means the Bluetooth connect was still")
-        print("in progress; a single 0x96 means it failed. Check the gateway's own log:")
-        print("    journalctl -u divoom-pi -n 50")
-        return result
+        return _drain(sock, "gateway")
     finally:
         sock.close()
 
 
 def _drain(sock: socket.socket, source: str) -> int:
-    sock.settimeout(3)
+    sock.settimeout(1)
     received = b""
-    deadline = time.time() + 5
+    deadline = time.time() + 6
     while time.time() < deadline:
         try:
             chunk = sock.recv(1024)
         except socket.timeout:
-            break
+            if received:
+                break
+            continue
         except OSError as err:
             print("Read failed: %s" % (err.strerror or err))
             return 1
         if not chunk:
             break
         received += chunk
-        if len(received) > 1:
+        # Keep reading past the gateway's own device announcements. They are
+        # not an answer, and stopping at the first bytes to arrive is exactly
+        # how this used to report success when nothing reached the Divoom.
+        if protocol.strip_advertisements(received):
             break
 
     if not received:
         print("Nothing came back from the %s." % source)
+        print("Check the gateway's log:  journalctl -u divoom-pi -n 50")
         return 1
+
     print("Got back: %s" % protocol.hexdump(received))
-    if received == protocol.REPLY_CONNECTING:
-        print("-> that is 'still connecting'. Run the selftest again in a few seconds.")
+    answer = protocol.strip_advertisements(received)
+    if len(answer) != len(received):
+        print(
+            "-> %d of those bytes are the gateway announcing a device it discovered,"
+            % (len(received) - len(answer))
+        )
+        print("   not a reply from the Divoom.")
+
+    if not answer:
+        print("-> nothing from the Divoom itself.")
+        print("   Most Divoom commands are not acknowledged, so for --action on/off/clock")
+        print("   this is normal: look at the display. Use --action ping to send something")
+        print("   the device does answer.")
         return 1
-    if received == protocol.REPLY_NOT_CONNECTED:
-        print("-> that is 'no Bluetooth connection'. See: journalctl -u divoom-pi -n 50")
+    if answer == protocol.REPLY_CONNECTING:
+        print("-> 'still connecting'. Run the selftest again in a few seconds.")
+        return 1
+    if answer == protocol.REPLY_NOT_CONNECTED:
+        print("-> 'no Bluetooth connection'. See: journalctl -u divoom-pi -n 50")
         return 1
     print("-> the Divoom answered. The whole path works.")
     return 0
@@ -479,7 +519,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--channel", type=int, default=1, help="RFCOMM channel (2 for Ditoo, 4 for Aurabox)"
     )
     selftest.add_argument(
-        "--action", choices=["ping", "on", "off"], default="ping", help="what to send"
+        "--action",
+        choices=["ping", "on", "off", "clock", "ha-on"],
+        default="ping",
+        help="ping: ask for the current view (the only one the device replies to). "
+        "on: light mode, white unless --color. off: display off. clock: back to the "
+        "clock face. ha-on: exactly what Home Assistant's send_on() sends, which is "
+        "RGB (1,1,1) and looks almost black",
+    )
+    selftest.add_argument(
+        "--color",
+        metavar="RRGGBB",
+        help="colour for --action on (default: white)",
+    )
+    selftest.add_argument(
+        "--brightness", type=int, default=100, help="brightness 0-100 for --action on"
     )
     selftest.add_argument("--host", default="127.0.0.1", help="gateway host to test through")
     selftest.add_argument(

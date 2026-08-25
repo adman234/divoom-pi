@@ -125,13 +125,79 @@ def ping() -> bytes:
     return build_command(CMD_GET_VIEW)
 
 
-def light(color=(0x01, 0x01, 0x01), brightness: int = 100, power: bool = True) -> bytes:
-    """"set view" in light mode - the integration's show_light()."""
+def light(color=None, brightness: int = 100, power: bool = True) -> bytes:
+    """"set view" in light mode - hass-divoom's show_light().
+
+    color=None takes the integration's own "no colour given" branch, which
+    sends white with a different trailing flag; an explicit colour takes the
+    custom-colour branch. The distinction matters more than it looks: send_on()
+    passes (1, 1, 1), which is very nearly black, so a device switched "on"
+    that way lights up showing essentially nothing.
+    """
     args = bytes([0x01])
-    args += bytes(color[:3])
-    args += bytes([brightness & 0xFF, 0x00])
+    if color is None or len(color) < 3:
+        args += bytes([0xFF, 0xFF, 0xFF, brightness & 0xFF, 0x01])
+    else:
+        args += bytes(color[:3]) + bytes([brightness & 0xFF, 0x00])
     args += bytes([0x01 if power else 0x00, 0x00, 0x00, 0x00])
     return build_command(CMD_SET_VIEW, args)
+
+
+def display_on() -> bytes:
+    """Byte-for-byte what the integration's send_on() sends (near-black - see light())."""
+    return light(color=(0x01, 0x01, 0x01), brightness=100, power=True)
+
+
+def display_off() -> bytes:
+    """Byte-for-byte what the integration's send_off() sends."""
+    return light(color=(0x01, 0x01, 0x01), brightness=0, power=False)
+
+
+def clock(
+    style: int = 0,
+    twentyfour: bool = False,
+    weather: bool = False,
+    temperature: bool = False,
+    calendar: bool = False,
+    color=None,
+) -> bytes:
+    """"set view" in clock mode - hass-divoom's show_clock().
+
+    The integration also sends a separate "set time type" command when the
+    caller specifies twentyfour; this builds only the view command, which is
+    all that is needed to put a display back to something recognisable.
+    """
+    args = bytes([0x00, 0x01 if twentyfour else 0x00])
+    if 0 <= style <= 15:
+        args += bytes([style, 0x01])  # clock style, clock activated
+    else:
+        args += bytes([0x00, 0x00])  # style 0, clock deactivated
+    args += bytes(
+        [
+            0x01 if weather else 0x00,
+            0x01 if temperature else 0x00,
+            0x01 if calendar else 0x00,
+        ]
+    )
+    if color is not None and len(color) == 3:
+        args += bytes(color)
+    return build_command(CMD_SET_VIEW, args)
+
+
+def strip_advertisements(data: bytes) -> bytes:
+    """Drop any 0x00 discovered-device notifications from the front of data.
+
+    The gateway announces the devices it finds to its TCP clients, so bytes
+    read back off the socket can begin with one of those rather than with
+    anything the Divoom said. Mistaking an advertisement for a device response
+    makes a connectivity test claim success when nothing reached the device.
+    """
+    while len(data) >= 8 and data[0] == ADVERTISE:
+        end = 8 + data[7]
+        if len(data) < end:
+            break
+        data = data[end:]
+    return data
 
 
 def hexdump(data: bytes, limit: int = 64) -> str:
