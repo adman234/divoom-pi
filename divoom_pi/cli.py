@@ -52,6 +52,12 @@ def load_config(args: argparse.Namespace) -> Config:
     return config
 
 
+# Global options use default=SUPPRESS (see _global_options), so they may be
+# absent from the namespace entirely rather than set to None.
+def log_level_of(args: argparse.Namespace, fallback: str = "INFO") -> str:
+    return getattr(args, "log_level", None) or fallback
+
+
 def _table(rows) -> str:
     if not rows:
         return ""
@@ -89,7 +95,7 @@ def command_run(args: argparse.Namespace) -> int:
 
 def command_scan(args: argparse.Namespace) -> int:
     config = load_config(args)
-    setup_logging(args.log_level or "INFO")
+    setup_logging(log_level_of(args))
 
     bluez = BlueZ(LOG.getChild("bluez"), executable=config.bluetoothctl)
     if not bluez.available():
@@ -123,7 +129,7 @@ def command_scan(args: argparse.Namespace) -> int:
 
 def command_pair(args: argparse.Namespace) -> int:
     config = load_config(args)
-    setup_logging(args.log_level or "INFO")
+    setup_logging(log_level_of(args))
 
     bluez = BlueZ(LOG.getChild("bluez"), executable=config.bluetoothctl)
     if not bluez.available():
@@ -168,7 +174,7 @@ def command_pair(args: argparse.Namespace) -> int:
 def command_selftest(args: argparse.Namespace) -> int:
     """Do exactly what Home Assistant does, and print what comes back."""
     config = load_config(args)
-    setup_logging(args.log_level or "INFO")
+    setup_logging(log_level_of(args))
 
     mac = protocol.normalize_mac(args.mac)
     if args.action == "ping":
@@ -404,35 +410,61 @@ def _port_open(host: str, port: int) -> bool:
 # argument parsing
 
 
+def _global_options() -> argparse.ArgumentParser:
+    """Options accepted on either side of the subcommand.
+
+    argparse will not accept a top-level option *after* the subcommand, so
+    without adding these to every subparser as well, `divoom-pi run --config X`
+    fails with "unrecognized arguments" - which is exactly how the systemd unit
+    invokes it, and how the troubleshooting docs tell people to run it by hand.
+    """
+    # default=SUPPRESS matters: because these options live on both the main
+    # parser and every subparser, an ordinary default would have the subparser
+    # overwrite whatever the main parser already parsed, so `--config X run`
+    # would quietly lose the path. SUPPRESS leaves the attribute unset instead,
+    # which is why everything reads these through getattr().
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--config",
+        metavar="PATH",
+        default=argparse.SUPPRESS,
+        help="configuration file (default: %s)" % DEFAULT_CONFIG_PATH,
+    )
+    common.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=argparse.SUPPRESS,
+        help="override the configured log level",
+    )
+    return common
+
+
+
 def build_parser() -> argparse.ArgumentParser:
+    common = _global_options()
     parser = argparse.ArgumentParser(
         prog="divoom-pi",
         description="Bluetooth Classic to TCP gateway for Divoom devices.",
+        parents=[common],
     )
     parser.add_argument("--version", action="version", version="divoom-pi %s" % __version__)
-    parser.add_argument(
-        "--config",
-        metavar="PATH",
-        help="configuration file (default: %s)" % DEFAULT_CONFIG_PATH,
-    )
-    parser.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="override the configured log level",
-    )
 
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", parser_class=argparse.ArgumentParser)
 
-    run = sub.add_parser("run", help="run the gateway (what the systemd service does)")
+    run = sub.add_parser(
+        "run", help="run the gateway (what the systemd service does)", parents=[common]
+    )
     run.add_argument("--listen", metavar="ADDRESS", help="override the listen address")
     run.add_argument("--port", type=int, help="override the listen port")
     run.set_defaults(func=command_run)
 
-    scan = sub.add_parser("scan", help="scan for Bluetooth devices and flag the Divooms")
+    scan = sub.add_parser(
+        "scan", help="scan for Bluetooth devices and flag the Divooms", parents=[common]
+    )
     scan.add_argument("--duration", type=int, default=15, help="scan length in seconds")
     scan.set_defaults(func=command_scan)
 
-    pair = sub.add_parser("pair", help="pair with a Divoom device")
+    pair = sub.add_parser("pair", help="pair with a Divoom device", parents=[common])
     pair.add_argument("mac", help="the Divoom's Bluetooth address")
     pair.add_argument("--duration", type=int, default=15, help="scan length if it must look first")
     pair.set_defaults(func=command_pair)
@@ -440,6 +472,7 @@ def build_parser() -> argparse.ArgumentParser:
     selftest = sub.add_parser(
         "selftest",
         help="do what Home Assistant does - connect and send one command",
+        parents=[common],
     )
     selftest.add_argument("mac", help="the Divoom's Bluetooth address")
     selftest.add_argument(
@@ -456,7 +489,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     selftest.set_defaults(func=command_selftest)
 
-    doctor = sub.add_parser("doctor", help="check the install and print what is wrong")
+    doctor = sub.add_parser(
+        "doctor", help="check the install and print what is wrong", parents=[common]
+    )
     doctor.set_defaults(func=command_doctor)
 
     return parser

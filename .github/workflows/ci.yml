@@ -9,6 +9,7 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +28,7 @@ jobs:
 
   shell:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Check install.sh
@@ -38,7 +40,10 @@ jobs:
 
   install:
     # The installer is the thing a new user runs first, so actually run it.
+    # timeout-minutes matters here: an unguarded bluetoothctl call once hung
+    # this job for the full six-hour runner limit.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install from the checkout
@@ -49,6 +54,25 @@ jobs:
         run: divoom-pi doctor || true
       - name: The service is installed
         run: systemctl cat divoom-pi
+      - name: The installed unit actually starts and listens
+        # Runs the unit's real ExecStart line. This is what would have caught
+        # the "--config after the subcommand" bug, which made every start fail
+        # while the CLI looked fine when driven by hand.
+        run: |
+          exec_start=$(systemctl cat divoom-pi | sed -n 's/^ExecStart=//p')
+          echo "ExecStart: $exec_start"
+          set +e
+          output=$(sudo timeout 45 $exec_start --log-level DEBUG 2>&1)
+          set -e
+          echo "$output"
+          if echo "$output" | grep -q "unrecognized arguments"; then
+            echo "::error::argparse rejected the unit's own command line"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "divoom-pi listening on"; then
+            echo "::error::the gateway never reported that it was listening"
+            exit 1
+          fi
       - name: Uninstall cleanly
         run: |
           sudo ./install.sh --uninstall

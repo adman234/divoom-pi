@@ -3,6 +3,11 @@ Description=divoom-pi - Bluetooth Classic to TCP gateway for Divoom devices
 Documentation=https://github.com/adman234/divoom-pi
 After=bluetooth.target network-online.target avahi-daemon.service
 Wants=bluetooth.target network-online.target
+# Stop retrying a permanently broken start instead of looping forever. With
+# RestartSec=5 this is roughly ten failures before systemd gives up and leaves
+# the unit failed, where `systemctl status` will show you why.
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -13,6 +18,9 @@ WorkingDirectory=@PREFIX@
 ExecStart=@PYTHON@ -m divoom_pi run --config @CONFIG@
 Restart=always
 RestartSec=5
+# Exit code 2 is "bad usage or unsupported platform" - a restart cannot fix
+# either, and retrying costs a couple of seconds of CPU each time on a Pi Zero.
+RestartPreventExitStatus=2
 
 # Root, because it needs raw Bluetooth sockets, BlueZ over D-Bus, and write
 # access to Avahi's service directory. ProtectSystem=full still keeps /usr

@@ -222,33 +222,88 @@ LAUNCHEREOF
     systemctl daemon-reload
 }
 
+# Nothing in here is allowed to hang the install. bluetoothctl in particular
+# waits indefinitely for a controller that never appears (it hung a CI runner
+# with no Bluetooth hardware for six hours), and it reads stdin, which is the
+# install script's own stdin when this is run as `curl ... | sudo bash`.
+guarded() {
+    local seconds="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@" >/dev/null 2>&1 </dev/null || return $?
+    else
+        "$@" >/dev/null 2>&1 </dev/null || return $?
+    fi
+}
+
 enable_dependencies() {
     step "Making sure Bluetooth and Avahi are running"
     if command -v rfkill >/dev/null 2>&1; then
-        rfkill unblock bluetooth 2>/dev/null || true
+        guarded 10 rfkill unblock bluetooth || true
     fi
+    local unit
     for unit in bluetooth avahi-daemon; do
-        systemctl enable --now "$unit" >/dev/null 2>&1 || warn "could not start $unit"
+        guarded 30 systemctl enable --now "$unit" || warn "could not start $unit"
     done
     [ -d "$AVAHI_SERVICE_DIR" ] || install -d "$AVAHI_SERVICE_DIR"
 
-    # bluetoothctl needs a moment after a cold start before the controller
-    # answers; powering it on here means the first scan is not wasted.
+    # A cold-started controller takes a moment to answer, so powering it on
+    # here means the gateway's first scan is not wasted.
     if command -v bluetoothctl >/dev/null 2>&1; then
-        bluetoothctl power on >/dev/null 2>&1 || true
+        guarded 15 bluetoothctl power on \
+            || warn "could not power on the Bluetooth adapter - check: divoom-pi doctor"
     fi
+}
+
+configured_port() {
+    local port=""
+    if [ -f "$CONFIG_FILE" ]; then
+        port=$(awk -F= '/^[[:space:]]*port[[:space:]]*=/ {gsub(/[^0-9]/, "", $2); print $2; exit}' \
+            "$CONFIG_FILE" 2>/dev/null) || port=""
+    fi
+    printf '%s' "${port:-7777}"
+}
+
+# "active" is not good enough: the service can still be inside its first couple
+# of seconds, or flapping under Restart=always, and report active while nothing
+# is listening. Waiting for the port to accept a connection is the check that
+# actually means the gateway came up.
+wait_until_listening() {
+    local port="$1"
+    local attempt=0
+    while [ "$attempt" -lt 30 ]; do
+        if ! systemctl is-active --quiet divoom-pi; then
+            return 1
+        fi
+        if "$PYTHON" -c 'import socket, sys
+probe = socket.socket()
+probe.settimeout(1)
+result = probe.connect_ex(("127.0.0.1", int(sys.argv[1])))
+probe.close()
+sys.exit(0 if result == 0 else 1)' "$port" 2>/dev/null; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 1
 }
 
 start_service() {
     step "Starting divoom-pi"
+    # A previous install that failed repeatedly can leave the unit rate-limited,
+    # and systemd will refuse to start it again until the counter is cleared.
+    systemctl reset-failed divoom-pi >/dev/null 2>&1 || true
     systemctl enable divoom-pi >/dev/null 2>&1 || warn "could not enable divoom-pi at boot"
     systemctl restart divoom-pi
-    sleep 2
-    if systemctl is-active --quiet divoom-pi; then
-        good "divoom-pi is running"
+
+    local port
+    port=$(configured_port)
+    if wait_until_listening "$port"; then
+        good "divoom-pi is running and listening on port $port"
     else
-        warn "divoom-pi did not start. The last few log lines:"
-        journalctl -u divoom-pi -n 20 --no-pager || true
+        warn "divoom-pi did not come up. The last few log lines:"
+        journalctl -u divoom-pi -n 30 --no-pager || true
         exit 1
     fi
 }
