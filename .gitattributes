@@ -1,0 +1,6 @@
+# Everything here is deployed to Linux. A CRLF in install.sh or the systemd
+# unit breaks them on the Pi, so normalise on the way in and out.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary

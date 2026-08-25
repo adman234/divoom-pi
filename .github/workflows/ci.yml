@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is Raspberry Pi OS Bullseye, 3.11 is Bookworm. Nothing here may
+        # need anything newer than the oldest of those.
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile
+        run: python -m compileall -q divoom_pi
+      - name: Test
+        run: python -m unittest discover -s tests -v
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check install.sh
+        run: |
+          bash -n install.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck install.sh
+
+  install:
+    # The installer is the thing a new user runs first, so actually run it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install from the checkout
+        run: sudo ./install.sh --no-start
+      - name: The command works
+        run: divoom-pi --version
+      - name: Doctor runs (failures are expected without Bluetooth hardware)
+        run: divoom-pi doctor || true
+      - name: The service is installed
+        run: systemctl cat divoom-pi
+      - name: Uninstall cleanly
+        run: |
+          sudo ./install.sh --uninstall
+          test ! -e /opt/divoom-pi
+          test ! -e /usr/local/bin/divoom-pi
