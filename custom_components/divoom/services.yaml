@@ -1,0 +1,564 @@
+show_image:
+  name: Show image
+  description: Shows a static or animated GIF from the media directory on the display.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    file:
+      name: File
+      description: Image file relative to the configured media directory.
+      required: true
+      example: ha16.gif
+      selector:
+        text:
+    time:
+      name: Frame time
+      description: Time in milliseconds between each frame. Defaults to the timing of the GIF.
+      selector:
+        number:
+          min: 10
+          max: 2000
+          unit_of_measurement: ms
+          mode: box
+
+show_text:
+  name: Show text
+  description: Shows text as a scrolling animation.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    text:
+      name: Text
+      description: The text to display.
+      required: true
+      example: Hi Divoom
+      selector:
+        text:
+    font:
+      name: Font
+      description: "Font filename from the fonts folder (included: arcade.ttf, arial.ttf, divoom.ttf, impact.ttf, pixelpowerline.ttf)."
+      example: divoom.ttf
+      selector:
+        text:
+    size:
+      name: Size
+      description: Font size in pixels.
+      selector:
+        number:
+          min: 4
+          max: 32
+          mode: box
+    time:
+      name: Frame time
+      description: Time in milliseconds between each frame.
+      selector:
+        number:
+          min: 10
+          max: 2000
+          unit_of_measurement: ms
+          mode: box
+    color:
+      name: Text color
+      selector:
+        color_rgb:
+    background_color:
+      name: Background color
+      selector:
+        color_rgb:
+
+show_clock:
+  name: Show clock
+  description: Switches to the clock channel.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    style:
+      name: Style
+      description: "The clock style (0-9). 0 = fullscreen, 1 = rainbow, 2 = boxed, 3 = analog square, 4 = fullscreen negative, 5 = analog round, 6 = widescreen."
+      selector:
+        number:
+          min: 0
+          max: 9
+          mode: box
+    twentyfour:
+      name: 24h format
+      selector:
+        boolean:
+    weather:
+      name: Show weather
+      selector:
+        boolean:
+    temperature:
+      name: Show temperature
+      selector:
+        boolean:
+    calendar:
+      name: Show calendar
+      selector:
+        boolean:
+    color:
+      name: Color
+      selector:
+        color_rgb:
+    hot:
+      name: Hot images slideshow
+      description: Shows the slideshow of the best images.
+      selector:
+        boolean:
+
+show_effects:
+  name: Show effects
+  description: Switches to the effects channel.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    number:
+      name: Effect number
+      description: Count the effects in the phone app to find the number.
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: box
+
+show_visualization:
+  name: Show visualization
+  description: Switches to the music visualization channel.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    number:
+      name: Visualization number
+      description: Count the visualizations in the phone app to find the number.
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: box
+
+show_design:
+  name: Show design
+  description: Switches to the design channel.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    number:
+      name: Design number
+      description: Design slot 1-3 (as 0-2).
+      selector:
+        number:
+          min: 0
+          max: 2
+          mode: box
+
+show_lyrics:
+  name: Show lyrics
+  description: Switches to the lyrics channel (not supported by every device).
+  target:
+    entity:
+      integration: divoom
+
+show_scoreboard:
+  name: Show scoreboard
+  description: Shows the scoreboard with the given scores.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    player1:
+      name: Player 1 score
+      selector:
+        number:
+          min: 0
+          max: 999
+          mode: box
+    player2:
+      name: Player 2 score
+      selector:
+        number:
+          min: 0
+          max: 999
+          mode: box
+
+show_timer:
+  name: Show timer
+  description: Starts or stops the timer tool.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    start:
+      name: Start
+      description: Start (on) or stop (off) the timer.
+      default: true
+      selector:
+        boolean:
+
+show_countdown:
+  name: Show countdown
+  description: Starts or stops the countdown tool.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    start:
+      name: Start
+      default: true
+      selector:
+        boolean:
+    countdown:
+      name: Countdown
+      description: "The countdown in the format mm:ss."
+      example: "02:30"
+      selector:
+        text:
+
+show_noise:
+  name: Show noise meter
+  description: Starts or stops the noise meter.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    start:
+      name: Start
+      default: true
+      selector:
+        boolean:
+
+show_radio:
+  name: Show radio
+  description: Shows and plays the radio channel (audio devices only).
+  target:
+    entity:
+      integration: divoom
+  fields:
+    "on":
+      name: 'On'
+      default: true
+      selector:
+        boolean:
+    frequency:
+      name: Frequency
+      description: The radio frequency, e.g. 100.3
+      selector:
+        number:
+          min: 76
+          max: 108
+          step: 0.1
+          mode: box
+
+show_sleep:
+  name: Show sleep mode
+  description: Starts or stops the sleep mode with soothing sounds and light.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    start:
+      name: Start
+      default: true
+      selector:
+        boolean:
+    time:
+      name: Time
+      description: Minutes after which the sleep mode stops.
+      selector:
+        number:
+          min: 1
+          max: 240
+          unit_of_measurement: min
+          mode: box
+    sleepmode:
+      name: Sound
+      description: The sound effect to play. Count the options in the phone app.
+      selector:
+        number:
+          min: 0
+          max: 30
+          mode: box
+    volume:
+      name: Volume
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    color:
+      name: Color
+      selector:
+        color_rgb:
+    brightness:
+      name: Brightness
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    frequency:
+      name: Radio frequency
+      selector:
+        number:
+          min: 76
+          max: 108
+          step: 0.1
+          mode: box
+
+show_temperature:
+  name: Show temperature
+  description: Shows the temperature channel (mainly Aurabox/Timebox Mini; uses the clock channel on other devices).
+  target:
+    entity:
+      integration: divoom
+  fields:
+    fahrenheit:
+      name: Fahrenheit
+      description: Show °F instead of °C.
+      default: false
+      selector:
+        boolean:
+    color:
+      name: Color
+      selector:
+        color_rgb:
+
+show_equalizer:
+  name: Show equalizer
+  description: Shows the music equalizer (Ditoo Mic only).
+  target:
+    entity:
+      integration: divoom
+  fields:
+    number:
+      name: Equalizer number
+      selector:
+        number:
+          min: 0
+          max: 30
+          mode: box
+    audiomode:
+      name: Audio mode
+      selector:
+        boolean:
+    backgroundmode:
+      name: Background mode
+      selector:
+        boolean:
+    streammode:
+      name: Stream mode
+      selector:
+        boolean:
+
+play_game:
+  name: Play game
+  description: Opens a game on the device.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    number:
+      name: Game number
+      description: Count the games in the phone app to find the number. Leave empty to exit.
+      selector:
+        number:
+          min: 0
+          max: 30
+          mode: box
+
+game_control:
+  name: Game control
+  description: Sends a control command to the currently open game.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    action:
+      name: Action
+      required: true
+      default: go
+      selector:
+        select:
+          options:
+            - go
+            - left
+            - right
+            - up
+            - down
+            - ok
+
+set_keyboard:
+  name: Keyboard light
+  description: Controls the keyboard LEDs (Ditoo only).
+  target:
+    entity:
+      integration: divoom
+  fields:
+    action:
+      name: Action
+      required: true
+      default: toggle
+      selector:
+        select:
+          options:
+            - toggle
+            - next
+            - previous
+
+set_playstate:
+  name: Set playstate
+  description: Plays or pauses the current music (audio devices only).
+  target:
+    entity:
+      integration: divoom
+  fields:
+    playing:
+      name: Playing
+      default: true
+      selector:
+        boolean:
+
+set_datetime:
+  name: Set date & time
+  description: Sets the device clock. Defaults to the current time.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    datetime:
+      name: Date & time
+      description: ISO formatted date and time. Leave empty for now.
+      example: "2026-12-31 18:30:00"
+      selector:
+        text:
+
+set_weather:
+  name: Set weather
+  description: Sets the weather shown on the weather channel.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    temperature:
+      name: Temperature
+      description: Temperature including unit.
+      required: true
+      example: "25°C"
+      selector:
+        text:
+    weather:
+      name: Weather
+      description: Weather condition (Home Assistant condition name or Divoom number).
+      example: sunny
+      selector:
+        text:
+
+set_alarm:
+  name: Set alarm
+  description: Configures an alarm slot on the device.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    number:
+      name: Slot
+      selector:
+        number:
+          min: 0
+          max: 9
+          mode: box
+    time:
+      name: Time
+      description: "Alarm time in the format hh:mm."
+      example: "07:30"
+      selector:
+        text:
+    weekdays:
+      name: Weekdays
+      selector:
+        select:
+          multiple: true
+          options:
+            - mon
+            - tue
+            - wed
+            - thu
+            - fri
+            - sat
+            - sun
+    alarmmode:
+      name: Alarm mode
+      selector:
+        number:
+          min: 0
+          max: 10
+          mode: box
+    triggermode:
+      name: Trigger mode
+      selector:
+        number:
+          min: 0
+          max: 10
+          mode: box
+    frequency:
+      name: Radio frequency
+      selector:
+        number:
+          min: 76
+          max: 108
+          step: 0.1
+          mode: box
+    volume:
+      name: Volume
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+
+set_memorial:
+  name: Set memorial
+  description: Configures a memorial (reminder) slot on the device.
+  target:
+    entity:
+      integration: divoom
+  fields:
+    number:
+      name: Slot
+      selector:
+        number:
+          min: 0
+          max: 9
+          mode: box
+    datetime:
+      name: Date & time
+      description: ISO formatted date and time (year is ignored).
+      example: "2000-12-31 00:00:00"
+      selector:
+        text:
+    text:
+      name: Name
+      description: Name of the memorial as it appears in the phone app (max 16 characters).
+      example: Happy New Year!
+      selector:
+        text:
+
+send_raw:
+  name: Send raw command
+  description: Sends raw command bytes to the device (advanced).
+  target:
+    entity:
+      integration: divoom
+  fields:
+    raw:
+      name: Raw bytes
+      description: "Hex bytes, e.g. '74 64' (first byte is the command)."
+      required: true
+      example: "74 64"
+      selector:
+        text:

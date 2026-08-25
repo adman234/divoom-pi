@@ -1,0 +1,428 @@
+"""Switching states and sending images or animations to a divoom device."""
+import logging, os, socket, threading
+import voluptuous as vol
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.loader import DATA_CUSTOM_COMPONENTS
+
+from homeassistant.components.notify import (
+    ATTR_DATA,
+    PLATFORM_SCHEMA,
+    BaseNotificationService
+)
+
+from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PORT
+from .const import CONF_DEVICE_TYPE, CONF_MEDIA_DIR, CONF_MEDIA_DIR_DEFAULT, CONF_ESCAPE_PAYLOAD, DOMAIN  # pylint:disable=unused-import
+from .hub import create_device
+
+_LOGGER = logging.getLogger(__package__)
+
+PARAM_MODE = 'mode'
+PARAM_TEXT = 'text'
+PARAM_VALUE = 'value'
+
+PARAM_CLOCK = 'clock'
+PARAM_TWENTYFOUR = 'twentyfour'
+PARAM_WEATHER = 'weather'
+PARAM_TEMP = 'temp'
+PARAM_CALENDAR = 'calendar'
+PARAM_HOT = 'hot'
+
+PARAM_ALARMMODE = 'alarmmode'
+PARAM_AUDIOMODE = 'audiomode'
+PARAM_BACKGROUNDMODE = 'backgroundmode'
+PARAM_STREAMMODE = 'streammode'
+PARAM_TRIGGERMODE = 'triggermode'
+PARAM_BRIGHTNESS = 'brightness'
+PARAM_COLOR = 'color'
+PARAM_COUNTDOWN = 'countdown'
+PARAM_FREQUENCY = 'frequency'
+PARAM_NUMBER = 'number'
+PARAM_WEEKDAY = 'weekday'
+PARAM_VOLUME = 'volume'
+PARAM_SIZE = 'size'
+
+PARAM_SLEEPMODE = 'sleepmode'
+PARAM_TIME = 'time'
+
+PARAM_PLAYER1 = 'player1'
+PARAM_PLAYER2 = 'player2'
+
+PARAM_FILE = 'file'
+PARAM_FONT = 'font'
+
+PARAM_RAW = 'raw'
+
+VALID_MODES = [
+    'alarm',
+    'brightness',
+    'clock',
+    'connect',
+    'countdown',
+    'datetime',
+    'design',
+    'disconnect',
+    'effects',
+    'equalizer',
+    'game',
+    'gamecontrol',
+    'image',
+    'keyboard',
+    'light',
+    'lyrics',
+    'memorial',
+    'noise',
+    'off',
+    'on',
+    'playstate',
+    'radio',
+    'raw',
+    'scoreboard',
+    'signal',
+    'sleep',
+    'temperature',
+    'text',
+    'timer',
+    'visualization',
+    'volume',
+    'weather',
+]
+
+WEATHER_MODES = {
+    'clear-night': 1, 
+    'cloudy': 3, 
+    'exceptional': 3, 
+    'fog': 9, 
+    'hail': 6, 
+    'lightning': 5, 
+    'lightning-rainy': 5, 
+    'partlycloudy': 3, 
+    'pouring': 6, 
+    'rainy': 6, 
+    'snowy': 8, 
+    'snowy-rainy': 8, 
+    'sunny': 1, 
+    'windy': 3, 
+    'windy-variant': 3
+}
+
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Optional(CONF_HOST): cv.string,
+    vol.Required(CONF_MAC): cv.string,
+    vol.Optional(CONF_PORT, default=1): cv.port,
+    vol.Required(CONF_DEVICE_TYPE): cv.string,
+    vol.Required(CONF_MEDIA_DIR, default=CONF_MEDIA_DIR_DEFAULT): cv.string,
+    vol.Optional(CONF_ESCAPE_PAYLOAD, default=False): cv.boolean
+})
+
+async def async_get_service(
+    hass: HomeAssistant,
+    config: ConfigType,
+    discovery_info: DiscoveryInfoType | None = None,
+):
+    """Get the Divoom notification service."""
+    
+    host = None
+    mac = None
+    port = 1
+    device_type = "pixoo"
+    media_directory = "pixelart"
+    escape_payload = None
+    hub = None
+
+    if discovery_info is not None and 'entry_id' in discovery_info:
+        hub = hass.data.get(DOMAIN, {}).get('hubs', {}).get(discovery_info['entry_id'])
+
+    if discovery_info is not None:
+        if CONF_HOST in discovery_info: host = discovery_info[CONF_HOST]
+        if CONF_MAC in discovery_info: mac = discovery_info[CONF_MAC]
+        if CONF_PORT in discovery_info: port = discovery_info[CONF_PORT]
+        if CONF_DEVICE_TYPE in discovery_info: device_type = discovery_info[CONF_DEVICE_TYPE]
+        if CONF_MEDIA_DIR in discovery_info: media_directory = hass.config.path(discovery_info[CONF_MEDIA_DIR])
+        if CONF_ESCAPE_PAYLOAD in discovery_info: escape_payload = discovery_info[CONF_ESCAPE_PAYLOAD]
+    
+    if config is not None:
+        if CONF_HOST in config: host = config[CONF_HOST]
+        if CONF_MAC in config: mac = config[CONF_MAC]
+        if CONF_PORT in config: port = config[CONF_PORT]
+        if CONF_DEVICE_TYPE in config: device_type = config[CONF_DEVICE_TYPE]
+        if CONF_MEDIA_DIR in config: media_directory = hass.config.path(config[CONF_MEDIA_DIR])
+        if CONF_ESCAPE_PAYLOAD in config: escape_payload = config[CONF_ESCAPE_PAYLOAD]
+    
+    font_directory = hass.config.path(f"{DATA_CUSTOM_COMPONENTS}/{DOMAIN}/fonts/")
+    notificationService = DivoomNotificationService(host, mac, port, device_type, media_directory, font_directory, escape_payload, hub=hub)
+
+    hass.data.setdefault(DOMAIN, {})
+    domainConfig = hass.data.get(DOMAIN)
+    domainConfig.setdefault('loaded', {})
+
+    loadedServices = domainConfig.get('loaded')
+    loadedServices[mac] = notificationService
+    
+    try:
+        await hass.async_add_executor_job(notificationService.connect)
+    except BrokenPipeError as error:
+        _LOGGER.error("Error while initially connecting to the Divoom device. %s", error, exc_info=True, stack_info=True)
+        pass
+    except socket.error as error:
+        _LOGGER.error("Error while initially connecting to the Divoom device. %s", error, exc_info=True, stack_info=True)
+        pass
+
+    return notificationService
+
+class DivoomNotificationService(BaseNotificationService):
+    """Implement the notification service for Divoom."""
+
+    def __init__(self, host, mac, port, device_type, media_directory, font_directory, escape_payload, hub=None):
+        assert mac is not None
+        assert port is not None
+        assert device_type is not None
+        assert media_directory is not None
+        assert font_directory is not None
+
+        self._media_directory = media_directory
+        self._font_directory = font_directory
+
+        if hub is not None:
+            # config entry path: share the connection (and lock) with the entities
+            self._device = hub.device
+            self._lock = hub._lock
+        else:
+            # legacy configuration.yaml path: own connection
+            self._device = create_device(device_type, host, mac, port, escape_payload, logger=_LOGGER)
+            self._lock = threading.RLock()
+
+        if self._device is None:
+            _LOGGER.error("device_type {0} does not exist, divoom will not work".format(device_type))
+        elif not os.path.isdir(media_directory):
+            _LOGGER.error("media_directory {0} does not exist, divoom may not work properly".format(media_directory))
+
+    def __del__(self):
+        self._device.disconnect()
+
+    def __exit__(self, type, value, traceback):
+        self._device.disconnect()
+
+    def connect(self):
+        with self._lock:
+            self._device.connect()
+
+    def disconnect(self):
+        with self._lock:
+            self._device.disconnect()
+
+    def _resolve_path(self, base_directory, filename):
+        joined = os.path.join(base_directory, filename)
+        real_base = os.path.realpath(base_directory)
+        real_joined = os.path.realpath(joined)
+        if os.path.commonpath([real_joined, real_base]) != real_base:
+            return None
+        return joined
+
+    def send_message(self, message="", **kwargs):
+        with self._lock:
+            return self._send_message(message, **kwargs)
+
+    def _send_message(self, message="", **kwargs):
+        if message == "" and kwargs.get(ATTR_DATA) is None:
+            _LOGGER.error("Service call needs more information")
+            return False
+        
+        data = kwargs.get(ATTR_DATA) or {}
+        mode = data.get(PARAM_MODE) or message
+        
+        if mode != "connect" and mode != "disconnect":
+            skipPing = True if mode == "gamecontrol" or mode == "raw" else False
+            self._device.reconnect(skipPing=skipPing)
+
+        if mode == "connect":
+            self._device.connect()
+
+        elif mode == "disconnect":
+            self._device.disconnect()
+
+        elif mode == 'on':
+            self._device.send_on()
+
+        elif mode == 'off':
+            self._device.send_off()
+        
+        elif mode == "alarm":
+            number = data.get(PARAM_NUMBER)
+            time = data.get(PARAM_VALUE)
+            weekdays = data.get(PARAM_WEEKDAY)
+            alarm_mode = data.get(PARAM_ALARMMODE)
+            trigger_mode = data.get(PARAM_TRIGGERMODE)
+            frequency = data.get(PARAM_FREQUENCY)
+            volume = data.get(PARAM_VOLUME)
+            self._device.show_alarm(number=number, time=time, weekdays=weekdays, alarmMode=alarm_mode, triggerMode=trigger_mode, frequency=frequency, volume=volume)
+
+        elif mode == "brightness":
+            value = data.get(PARAM_BRIGHTNESS) or data.get(PARAM_NUMBER) or data.get(PARAM_VALUE)
+            self._device.send_brightness(value=value)
+
+        elif mode == "clock":
+            clock = data.get(PARAM_CLOCK)
+            twentyfour = data.get(PARAM_TWENTYFOUR)
+            weather = data.get(PARAM_WEATHER)
+            temp = data.get(PARAM_TEMP)
+            calendar = data.get(PARAM_CALENDAR)
+            color = data.get(PARAM_COLOR)
+            hot = data.get(PARAM_HOT)
+            self._device.show_clock(clock=clock, twentyfour=twentyfour, weather=weather, temp=temp, calendar=calendar, color=color, hot=hot)
+
+        elif mode == "countdown":
+            value = data.get(PARAM_VALUE)
+            countdown = data.get(PARAM_COUNTDOWN)
+            self._device.show_countdown(value=value, countdown=countdown)
+
+        elif mode == "datetime":
+            value = data.get(PARAM_VALUE)
+            self._device.send_datetime(value=value)
+
+        elif mode == "design":
+            number = data.get(PARAM_NUMBER)
+            self._device.show_design(number=number)
+
+        elif mode == "effects":
+            number = data.get(PARAM_NUMBER)
+            self._device.show_effects(number=number)
+
+        elif mode == "equalizer":
+            number = data.get(PARAM_NUMBER)
+            audioMode = data.get(PARAM_AUDIOMODE)
+            backgroundMode = data.get(PARAM_BACKGROUNDMODE)
+            streamMode = data.get(PARAM_STREAMMODE)
+            self._device.show_equalizer(number=number, audioMode=audioMode, backgroundMode=backgroundMode, streamMode=streamMode)
+
+        elif mode == "game":
+            value = data.get(PARAM_VALUE)
+            self._device.show_game(value=value)
+
+        elif mode == "gamecontrol":
+            value = data.get(PARAM_VALUE)
+            self._device.send_gamecontrol(value=value)
+
+        elif mode == "image":
+            image_file = data.get(PARAM_FILE)
+            if image_file is None:
+                _LOGGER.error("Service call needs a file")
+                return False
+            image_path = self._resolve_path(self._media_directory, image_file)
+            if image_path is None:
+                _LOGGER.error("file '{0}' is outside of the configured media directory".format(image_file))
+                return False
+            time = data.get(PARAM_TIME)
+            self._device.show_image(image_path, time=time)
+
+        elif mode == "keyboard":
+            value = data.get(PARAM_VALUE)
+            self._device.send_keyboard(value=value)
+
+        elif mode == "light":
+            brightness = data.get(PARAM_BRIGHTNESS)
+            color = data.get(PARAM_COLOR)
+            self._device.show_light(color=color, brightness=brightness, power=True)
+
+        elif mode == "lyrics":
+            self._device.show_lyrics()
+
+        elif mode == "memorial":
+            number = data.get(PARAM_NUMBER)
+            value = data.get(PARAM_VALUE)
+            text = data.get(PARAM_TEXT)
+            self._device.show_memorial(number=number, value=value, text=text, animate=True)
+
+        elif mode == "noise":
+            value = data.get(PARAM_VALUE)
+            self._device.show_noise(value=value)
+
+        elif mode == "playstate":
+            value = data.get(PARAM_VALUE)
+            self._device.send_playstate(value=value)
+
+        elif mode == "radio":
+            value = data.get(PARAM_VALUE)
+            frequency = data.get(PARAM_FREQUENCY)
+            self._device.show_radio(value=value, frequency=frequency)
+
+        elif mode == "raw":
+            raw = data.get(PARAM_RAW)
+            if not raw:
+                _LOGGER.error("Service call needs a raw command")
+                return False
+            self._device.send_command(command=raw[0], args=raw[1:])
+
+        elif mode == "scoreboard":
+            player1 = data.get(PARAM_PLAYER1)
+            player2 = data.get(PARAM_PLAYER2)
+            self._device.show_scoreboard(blue=player1, red=player2)
+
+        elif mode == "sleep":
+            sleepvalue = data.get(PARAM_VALUE)
+            sleeptime = data.get(PARAM_TIME)
+            sleepmode = data.get(PARAM_SLEEPMODE)
+            volume = data.get(PARAM_VOLUME)
+            color = data.get(PARAM_COLOR)
+            brightness = data.get(PARAM_BRIGHTNESS)
+            frequency = data.get(PARAM_FREQUENCY)
+            self._device.show_sleep(sleepvalue, sleeptime, sleepmode, volume, color, brightness, frequency)
+
+        elif mode == "temperature":
+            value = data.get(PARAM_TEMP) or data.get(PARAM_VALUE)
+            color = data.get(PARAM_COLOR)
+            self._device.show_temperature(value=value, color=color)
+
+        elif mode == "text":
+            text = data.get(PARAM_TEXT) or data.get(PARAM_VALUE)
+            font_file = data.get(PARAM_FONT)
+            font_path = None
+            if font_file is not None:
+                font_path = self._resolve_path(self._font_directory, font_file)
+                if font_path is None:
+                    _LOGGER.error("font '{0}' is outside of the configured font directory".format(font_file))
+                    return False
+            size = data.get(PARAM_SIZE)
+            time = data.get(PARAM_TIME)
+            color = data.get(PARAM_COLOR)
+            self._device.show_text(text, font_path, size=size, time=time, color1=color[0] if color is not None and len(color) > 0 else None, color2=color[1] if color is not None and len(color) > 1 else None)
+
+        elif mode == "timer":
+            value = data.get(PARAM_VALUE)
+            self._device.show_timer(value=value)
+
+        elif mode == "visualization" or mode == "signal":
+            number = data.get(PARAM_NUMBER)
+            color = data.get(PARAM_COLOR)
+            self._device.show_visualization(number=number, color1=color[0] if color is not None and len(color) > 0 else None, color2=color[1] if color is not None and len(color) > 1 else None)
+
+        elif mode == "volume":
+            value = data.get(PARAM_VOLUME) or data.get(PARAM_NUMBER) or data.get(PARAM_VALUE)
+            self._device.send_volume(value=value)
+
+        elif mode == "weather":
+            value = data.get(PARAM_VALUE)
+            weather = data.get(PARAM_WEATHER)
+
+            weathernum = None
+            if isinstance(weather, int):
+                weathernum = weather
+            elif isinstance(weather, float):
+                weathernum = round(weather)
+            elif isinstance(weather, str):
+                weathernum = WEATHER_MODES.get(weather) or None
+
+            self._device.send_weather(value=value, weather=weathernum)
+
+        else:
+            validModes = ""
+            for validMode in VALID_MODES:
+                if len(validModes) > 0: validModes += ", "
+                validModes += "'{0}'".format(validMode)
+
+            _LOGGER.error("Invalid mode '{0}'. Must be one of: {1}".format(mode, validModes))
+            return False
+        
+        return True

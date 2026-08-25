@@ -1,0 +1,62 @@
+{
+  "config": {
+    "flow_title": "{name} ({mac}{host_text})",
+    "title": "Divoom (BT)",
+    "step": {
+      "user": {
+        "title": "Divoom device",
+        "description": "Select your Divoom device.",
+        "data": {
+          "mac": "Divoom device",
+          "port": "Bluetooth channel/port",
+          "host": "ESP32-Divoom hostname/IP"
+        },
+        "data_description": {
+          "host": "ESP32-Divoom is an additional companion firmware acting as a Bluetooth (classic) Proxy. If you have it, you can use it instead of directly connecting to your Divoom device via Bluetooth. If not, just leave it empty and Home Assistant will connect directly via Bluetooth."
+        }
+      },
+      "device_port": {
+        "title": "Divoom device: port",
+        "description": "Select the channel/port of your Divoom device.",
+        "data": {
+          "port": "Port",
+          "host": "Divoom Gateway hostname/IP"
+        },
+        "data_description": {
+          "host": "Optional: the hostname or IP of an ESP32 running the Divoom Gateway firmware, which acts as a Bluetooth Classic proxy. Leave empty to connect directly via the Bluetooth hardware of your Home Assistant host."
+        }
+      },
+      "device_type": {
+        "title": "Divoom device: type",
+        "description": "Select the type of your Divoom device.",
+        "data": {
+          "type": "Type"
+        }
+      },
+      "confirm": {
+        "title": "Confirmation",
+        "description": "Your Divoom device is configured."
+      },
+      "reconfigure": {
+        "title": "Divoom device: connection",
+        "description": "{mac} is currently reached via {current}.\n\nEnter the hostname or IP of your Divoom gateway (an ESP32 running the gateway firmware, or a Raspberry Pi running divoom-pi) to reach the device over the network. Leave it empty to connect directly using the Bluetooth adapter of your Home Assistant host.",
+        "data": {
+          "host": "Gateway hostname/IP",
+          "port": "Bluetooth channel/port",
+          "device_type": "Type"
+        },
+        "data_description": {
+          "host": "Empty means Home Assistant talks to the Divoom over its own Bluetooth hardware. A device added through Bluetooth discovery starts out this way.",
+          "port": "The RFCOMM channel of the device: 2 for Ditoo, Ditoo Mic and Timoo, 4 for Aurabox and Timebox Mini, 1 for everything else."
+        }
+      }
+    },
+    "abort": {
+      "already_in_progress": "There is already a Divoom device with that MAC address in progress.",
+      "already_configured": "There is already a Divoom device with that MAC address configured.",
+      "invalid_discovery_info": "The discovered device did not provide the information needed to configure it.",
+      "reconfigure_successful": "The Divoom device was reconfigured.",
+      "unknown_entry": "That Divoom device is no longer configured."
+    }
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "domain": "divoom",
+  "name": "Divoom",
+  "bluetooth": [
+    {
+      "local_name": "Aurabox*"
+    },
+    {
+      "local_name": "Ditoo*"
+    },
+    {
+      "local_name": "Divoom*"
+    },
+    {
+      "local_name": "Pixoo*"
+    },
+    {
+      "local_name": "Timebox*"
+    },
+    {
+      "local_name": "Timoo*"
+    },
+    {
+      "local_name": "Tivoo*"
+    }
+  ],
+  "codeowners": [
+    "@d03n3rfr1tz3",
+    "@adman234"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
+  "documentation": "https://github.com/adman234/divoom-pi/blob/main/README.md",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/adman234/divoom-pi/issues",
+  "loggers": [
+    "divoom"
+  ],
+  "requirements": [
+    "pillow>=7.2.0"
+  ],
+  "version": "2.1.0",
+  "zeroconf": [
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
+        "device_name": "aurabox*"
+      }
+    },
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
+        "device_name": "ditoo*"
+      }
+    },
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
+        "device_name": "divoom*"
+      }
+    },
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
+        "device_name": "pixoo*"
+      }
+    },
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
+        "device_name": "timebox*"
+      }
+    },
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
+        "device_name": "timoo*"
+      }
+    },
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
+        "device_name": "tivoo*"
+      }
+    }
+  ]
+}

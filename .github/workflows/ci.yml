@@ -26,6 +26,34 @@ jobs:
       - name: Test
         run: python -m unittest discover -s tests -v
 
+  integration:
+    # The Home Assistant integration, checked against a stubbed Home Assistant.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install what the flow needs
+        run: pip install voluptuous
+      - name: Compile
+        run: python -m compileall -q custom_components
+      - name: Config flow and diagnostics
+        run: python tests/integration/config_flow_check.py .
+      - name: Clock styles, colour and brightness
+        run: python tests/integration/clock_check.py .
+      - name: Manifest and translations are valid JSON
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          for path in pathlib.Path("custom_components").rglob("*.json"):
+              json.loads(path.read_text(encoding="utf-8"))
+              print("ok", path)
+          json.loads(pathlib.Path("hacs.json").read_text(encoding="utf-8"))
+          print("ok hacs.json")
+          PY
+
   shell:
     runs-on: ubuntu-latest
     timeout-minutes: 10
