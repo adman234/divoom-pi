@@ -77,11 +77,16 @@ show_clock:
   fields:
     style:
       name: Style
-      description: "The clock style (0-9). 0 = fullscreen, 1 = rainbow, 2 = boxed, 3 = analog square, 4 = fullscreen negative, 5 = analog round, 6 = widescreen."
+      description: >-
+        The clock style. Checked against a Ditoo Pro, where these do not match
+        the names Divoom's app uses: 0 = fullscreen, 1 = fullscreen negative,
+        5 = rainbow, 6 = clock with green drips. 2, 3 and 4 are not clock faces
+        at all but music visualisers (green sides, rainbow bars, boxed).
+        Anything above 15 deactivates the clock face. Other models may differ.
       selector:
         number:
           min: 0
-          max: 9
+          max: 15
           mode: box
     twentyfour:
       name: 24h format
@@ -105,9 +110,16 @@ show_clock:
         color_rgb:
     hot:
       name: Hot images slideshow
-      description: Shows the slideshow of the best images.
+      description: >-
+        Turn the slideshow of the best images on or off. Leave this unset to
+        leave the device's current setting alone. It is a choice rather than a
+        toggle because an unset toggle and a toggle switched off are the same
+        thing to Home Assistant, which made it impossible to turn off.
       selector:
-        boolean:
+        select:
+          options:
+            - "on"
+            - "off"
 
 show_effects:
   name: Show effects

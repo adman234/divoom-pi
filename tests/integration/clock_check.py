@@ -20,6 +20,7 @@ from custom_components.divoom import light as light_module  # noqa: E402
 from custom_components.divoom import select as select_module  # noqa: E402
 from custom_components.divoom.const import CLOCK_STYLES  # noqa: E402
 from custom_components.divoom.hub import DivoomHub  # noqa: E402
+from custom_components.divoom.services import tristate  # noqa: E402
 
 MAC = "b1:21:81:bf:a8:eb"
 checks = []
@@ -109,6 +110,13 @@ async def main():
     check("switching to the clock channel keeps style and colour",
           command == "show_clock" and kwargs["clock"] == 4 and kwargs["color"] == [0, 0, 255],
           str(kwargs))
+
+    # -- three-state service fields ------------------------------------------
+    check("'off' means off", tristate("off") is False)
+    check("'on' means on", tristate("on") is True)
+    check("unset stays unset", tristate(None) is None)
+    check("booleans still work", tristate(False) is False and tristate(True) is True)
+    check("nonsense is treated as unset", tristate("maybe") is None)
 
     # -- an untouched clock sends no colour at all ---------------------------
     hub = make_hub()

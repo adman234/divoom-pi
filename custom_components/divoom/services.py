@@ -24,6 +24,29 @@ WEATHER_MODES = {
 }
 
 
+
+def tristate(value):
+    """Normalise a three-state service field: True, False, or None for "leave alone".
+
+    Fields like `hot` mean three different things - turn it on, turn it off, or
+    do not touch it - and a Home Assistant boolean selector cannot express that:
+    a toggle left alone and a toggle switched off both arrive the same way, so
+    turning the slideshow off was impossible through the UI. They are select
+    fields now, and this accepts the strings alongside the booleans that
+    existing automations and YAML will still be sending.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("on", "true", "yes", "1"):
+            return True
+        if lowered in ("off", "false", "no", "0"):
+            return False
+        return None
+    return bool(value)
+
+
 def _resolve_hubs(hass: HomeAssistant, call: ServiceCall) -> list[DivoomHub]:
     """Resolve the targeted devices/entities of a service call into hubs."""
     device_ids = call.data.get("device_id") or []
@@ -91,12 +114,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
         await _run(
             call, "show_clock",
             clock=call.data.get("style"),
-            twentyfour=call.data.get("twentyfour"),
+            twentyfour=tristate(call.data.get("twentyfour")),
             weather=call.data.get("weather"),
             temp=call.data.get("temperature"),
             calendar=call.data.get("calendar"),
             color=list(color) if color else None,
-            hot=call.data.get("hot"),
+            hot=tristate(call.data.get("hot")),
         )
 
     async def show_effects(call: ServiceCall) -> None:

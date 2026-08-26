@@ -41,7 +41,7 @@
   "requirements": [
     "pillow>=7.2.0"
   ],
-  "version": "2.1.0",
+  "version": "2.1.1",
   "zeroconf": [
     {
       "type": "_divoom_esp32._tcp.local.",
