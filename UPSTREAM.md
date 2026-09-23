@@ -16,17 +16,17 @@ volume, buttons) alongside the original notify service.
 
 ## Changes made here
 
-- `config_flow.py` — a reconfigure step, so the gateway host, RFCOMM channel
+- `config_flow.py`: a reconfigure step, so the gateway host, RFCOMM channel
   and device type can be changed without deleting the entry; zeroconf now
   adopts an announcing gateway for an entry that has no host instead of
   aborting forever.
-- `diagnostics.py` — new; states whether a device is reached through a gateway
+- `diagnostics.py`: new; states whether a device is reached through a gateway
   or through the Home Assistant host's own Bluetooth adapter.
-- `devices/divoom.py` — `reconnect()` treats any non-zero errno as a failure.
+- `devices/divoom.py`: `reconnect()` treats any non-zero errno as a failure.
   It tested `> 0`, which silently ignored `socket.gaierror` (negative errno),
   so an unresolvable gateway hostname produced no log line anywhere.
-- `const.py` — the clock style indices, corrected against a real Ditoo Pro.
-- `light.py`, `hub.py`, `select.py` — a clock entity for the colour and
+- `const.py`: the clock style indices, corrected against a real Ditoo Pro.
+- `light.py`, `hub.py`, `select.py`: a clock entity for the colour and
   brightness of the clock face.
 
 ## Merging upstream

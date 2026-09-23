@@ -2,7 +2,7 @@
 
 divoom-pi speaks the protocol the ESP32 `divoom-gateway` firmware speaks, byte for byte, so Home
 Assistant's `divoom` integration works with either without knowing which it is talking to. This
-document is a description of that existing protocol, not a proposal — anything here that looks odd
+document is a description of that existing protocol, not a proposal: anything here that looks odd
 is odd in the original too, and divoom-pi matches it deliberately.
 
 The reference implementations are `input/tcp.cpp` and `output/bluetooth.cpp` in
@@ -87,7 +87,7 @@ does the same. This works because the integration sends each message with its ow
 reads and messages line up.
 
 `divoom_pi/protocol.py` implements exactly this, and `tests/test_protocol.py` pins the behaviour
-down — including a payload with `02` bytes inside it, messages split across reads, and two messages
+down, including a payload with `02` bytes inside it, messages split across reads, and two messages
 arriving in one read.
 
 ## Discovery
@@ -108,6 +108,6 @@ property, and `async_step_zeroconf()` reads `device_mac`, `device_name` and the 
 straight out of the record. That is what makes the device appear in Home Assistant on its own.
 
 divoom-pi publishes these through Avahi by writing service files into `/etc/avahi/services` rather
-than running a second mDNS responder — Avahi is already running on Raspberry Pi OS, and this keeps
+than running a second mDNS responder: Avahi is already running on Raspberry Pi OS, and this keeps
 divoom-pi free of Python dependencies. It also means one record per device, where the ESP32's
 `ESPmDNS` could only ever hold the TXT records of the most recently seen one.

@@ -38,7 +38,7 @@ sudo bluetoothctl power on
 **Nothing at all is found, not even other devices.** Then it is the Pi's Bluetooth, not the Divoom.
 `divoom-pi doctor` will show whether a controller exists and is powered. On Raspberry Pi OS, check
 that nothing has disabled the on-board Bluetooth in `/boot/firmware/config.txt` (older images:
-`/boot/config.txt`) — a `dtoverlay=disable-bt` line does exactly that.
+`/boot/config.txt`): a `dtoverlay=disable-bt` line does exactly that.
 
 ## The device is found, but connecting fails
 
@@ -75,7 +75,7 @@ bluetoothctl
 
 After that divoom-pi connects without any further help.
 
-**It connects, then drops.** Something else is grabbing the device — a phone reconnecting
+**It connects, then drops.** Something else is grabbing the device: a phone reconnecting
 automatically is the usual culprit. Forget the Pi's Divoom on the phone, or leave phone Bluetooth
 off while testing.
 
@@ -87,7 +87,7 @@ off while testing.
 ls /etc/avahi/services/divoom-pi-*.service
 ```
 
-Nothing there means no Divoom has been discovered yet — go back to `divoom-pi scan`. Discovery runs
+Nothing there means no Divoom has been discovered yet: go back to `divoom-pi scan`. Discovery runs
 5 seconds after startup and then every 60 seconds, backing off to every 15 minutes once it stops
 finding anything new, so give it a moment after a restart.
 
@@ -100,7 +100,7 @@ avahi-browse -rt _divoom_esp32._tcp
 If the Pi's record does not appear there, mDNS is not crossing your network. That usually means
 Home Assistant and the Pi are on different subnets or VLANs, or a router is not forwarding
 multicast, or Home Assistant is in Docker with a bridge network instead of host networking. In any
-of those cases, **add the device by hand instead** — discovery is a convenience, and manual setup
+of those cases, **add the device by hand instead**: discovery is a convenience, and manual setup
 works identically:
 
 *Settings → Devices & Services → Add Integration → Divoom*, then enter the Divoom's MAC address,
@@ -124,7 +124,7 @@ nc -vz <pi-address> 7777
 ```
 
 from the Home Assistant host. If the port is open but no connection is logged, the integration is
-not attempting one — check for a duplicate Divoom config entry in Home Assistant (repeated
+not attempting one: check for a duplicate Divoom config entry in Home Assistant (repeated
 discovery can leave more than one), and check that the entry's *host* is set. A Divoom entry with
 no host configured talks to Bluetooth directly from the Home Assistant machine and never contacts
 the Pi at all.
@@ -138,7 +138,7 @@ logger:
 ```
 
 **A connection appears, and the log shows `no Bluetooth connection`.** The TCP side is fine and the
-Bluetooth side is not — go back to the connection section above, and confirm with
+Bluetooth side is not: go back to the connection section above, and confirm with
 `divoom-pi selftest <MAC> --channel N`.
 
 **A connection appears and bytes flow, but the device ignores them.** Almost always the wrong

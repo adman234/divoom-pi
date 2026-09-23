@@ -15,11 +15,16 @@ curl -fsSL https://raw.githubusercontent.com/adman234/divoom-pi/main/install.sh 
 That is the whole install. The Pi then finds your Divoom over Bluetooth, announces it on your
 network, and Home Assistant offers to add it.
 
+The Home Assistant integration and the Divoom protocol come from
+[d03n3rfr1tz3](https://github.com/d03n3rfr1tz3)'s [hass-divoom](https://github.com/d03n3rfr1tz3/hass-divoom),
+and the gateway speaks the same TCP protocol as his
+[esp32-divoom](https://github.com/d03n3rfr1tz3/esp32-divoom) firmware. See [Credits](#credits).
+
 ---
 
 ## Why this exists
 
-Divoom devices (Pixoo, Ditoo, Timebox, Tivoo, Timoo, Aurabox) talk **Bluetooth Classic (SPP)** —
+Divoom devices (Pixoo, Ditoo, Timebox, Tivoo, Timoo, Aurabox) talk **Bluetooth Classic (SPP)**,
 not BLE. That single fact causes all the trouble:
 
 - Home Assistant's ESPHome Bluetooth proxies are **BLE-only** and cannot talk to a Divoom at all.
@@ -31,7 +36,7 @@ an ESP32 that bridges Bluetooth Classic to TCP, with
 but only the original ESP32 chip has Bluetooth Classic at all, WiFi and Bluetooth fight over the one
 radio, and every change means a compile-and-flash cycle.
 
-A Raspberry Pi has BlueZ, so the bridge is a plain socket and an ordinary Linux service — one that
+A Raspberry Pi has BlueZ, so the bridge is a plain socket and an ordinary Linux service: one that
 you can restart, read logs from, and debug over SSH. **divoom-pi speaks the exact same TCP protocol
 as the ESP32 firmware**, so the Home Assistant integration cannot tell the difference and needs no
 changes.
@@ -53,10 +58,10 @@ changes.
 
 | | |
 | --- | --- |
-| **A Raspberry Pi with Bluetooth** | Pi Zero W, Zero 2 W, 3, 4, 5 — anything with built-in Bluetooth. A Pi Zero W (1st gen) is plenty; this daemon is idle almost all the time. |
+| **A Raspberry Pi with Bluetooth** | Pi Zero W, Zero 2 W, 3, 4, 5: anything with built-in Bluetooth. A Pi Zero W (1st gen) is plenty; this daemon is idle almost all the time. |
 | **Raspberry Pi OS** | The default image, Lite or Desktop, Bullseye or newer. Enable SSH in Raspberry Pi Imager. |
 | **Network** | WiFi or Ethernet, on the same network as Home Assistant so mDNS discovery works. |
-| **Home Assistant** | 2024.4 or newer, with the Divoom integration from this repository installed through HACS — see below. |
+| **Home Assistant** | 2024.4 or newer, with the Divoom integration from this repository installed through HACS: see below. |
 
 No Python packages to install: divoom-pi uses only the standard library and the `bluez` and
 `avahi-daemon` packages that the installer sets up. That matters on a Pi Zero W, where compiling a
@@ -81,7 +86,7 @@ The installer:
 3. installs the `divoom-pi` command,
 4. enables and starts a `divoom-pi` systemd service.
 
-To update later, run the same command again — your config file is kept. To remove everything:
+To update later, run the same command again: your config file is kept. To remove everything:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/adman234/divoom-pi/main/install.sh | sudo bash -s -- --uninstall
@@ -89,7 +94,7 @@ curl -fsSL https://raw.githubusercontent.com/adman234/divoom-pi/main/install.sh 
 
 ## Find your Divoom and test it
 
-Turn the Divoom on, and **disconnect it from your phone** — Divoom devices accept one Bluetooth
+Turn the Divoom on, and **disconnect it from your phone**: Divoom devices accept one Bluetooth
 connection at a time, and the Divoom app holds onto it.
 
 ```bash
@@ -135,7 +140,7 @@ what creates the device and its entities.
 
 1. **Install the integration.** In HACS, add `https://github.com/adman234/divoom-pi` as a custom
    repository of type *Integration*, install **Divoom**, and restart Home Assistant. HACS copies
-   only `custom_components/divoom` — the gateway code stays out of your Home Assistant config.
+   only `custom_components/divoom`: the gateway code stays out of your Home Assistant config.
 
    > Already using `adman234/divoom-gateway`? Remove it from HACS first. Both provide the `divoom`
    > domain and they will collide. Your existing device survives the swap: the config entry is keyed
@@ -146,7 +151,7 @@ what creates the device and its entities.
    host. Click **Configure**, confirm the channel and device type, done.
 
    To add it by hand: *Add Integration → Divoom*, then your Divoom's **MAC address**, the **channel**
-   from the table above, and the **host** — the Pi's IP address.
+   from the table above, and the **host**: the Pi's IP address.
 
    **Use an IP address, or a name that actually resolves.** A bare hostname that Home Assistant
    cannot resolve is the single most common way to end up with a device that accepts every command
@@ -161,12 +166,12 @@ what creates the device and its entities.
 
 | Entity | What it does |
 | --- | --- |
-| **Light** | The light channel — full RGB and brightness. |
+| **Light** | The light channel: full RGB and brightness. |
 | **Clock** | The colour and brightness of the clock face. Turning it off deactivates the clock, not the display. |
 | **Clock style** | The clock faces and the music visualisers (see below). |
 | **Channel** | Clock, light, effects, visualisation, design, lyrics. |
 | **Brightness**, **Volume** | Device brightness and speaker volume. |
-| **Buttons** | Device-specific extras — keyboard, equaliser and so on. |
+| **Buttons** | Device-specific extras: keyboard, equaliser and so on. |
 
 Plus the full set of Divoom actions from upstream: text, images, GIFs, scoreboards, countdowns,
 alarms, noise meter, radio, and the rest.
@@ -175,7 +180,7 @@ alarms, noise meter, radio, and the rest.
 these were checked by hand against a Ditoo Pro: index 1 is the *negative* fullscreen face, not the
 rainbow one, index 5 is the rainbow one, and indices 2–4 are not clock faces at all but music
 visualisers. They are listed as clock faces first, then visualisers. **Another model may map these
-differently** — if yours does, the mapping is one dict in
+differently**: if yours does, the mapping is one dict in
 [`custom_components/divoom/const.py`](custom_components/divoom/const.py).
 
 **About clock brightness.** The device's own brightness control only affects the effects drawn
@@ -187,7 +192,7 @@ digits appear.
 
 | Command | What it does |
 | --- | --- |
-| `divoom-pi doctor` | Checks everything — Bluetooth, Avahi, the service, the port — and says what is wrong. Start here. |
+| `divoom-pi doctor` | Checks everything (Bluetooth, Avahi, the service, the port) and says what is wrong. Start here. |
 | `divoom-pi scan` | Scans for Bluetooth devices and flags the Divooms. |
 | `divoom-pi pair <MAC>` | Pairs with a Divoom that will not connect without it. |
 | `divoom-pi selftest <MAC> --channel N` | Does what Home Assistant does, and prints what came back. `--action ping\|on\|off\|clock`, `--color RRGGBB`, `--direct` to bypass the gateway. |
@@ -202,7 +207,7 @@ journalctl -u divoom-pi -f
 
 ## Configuration
 
-`/etc/divoom-pi/config.ini`, documented inline — see
+`/etc/divoom-pi/config.ini`, documented inline: see
 [`config.example.ini`](config.example.ini). Every value has a sensible default, so the file is only
 there for when you need it. The one you are most likely to touch:
 
@@ -215,7 +220,7 @@ which logs every byte in both directions. Restart the service to apply changes.
 
 ## Troubleshooting
 
-Run `divoom-pi doctor` first — it catches most of it. Beyond that, see
+Run `divoom-pi doctor` first: it catches most of it. Beyond that, see
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md), which covers the usual suspects: the Divoom
 still being connected to your phone, the wrong RFCOMM channel, Home Assistant and the Pi being on
 different networks so mDNS never arrives, and pairing PINs.
@@ -246,7 +251,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 They cover the protocol and the whole TCP side of the gateway with Bluetooth faked out, so they run
-anywhere. The Bluetooth half needs a real Divoom — that is what `divoom-pi selftest` is for.
+anywhere. The Bluetooth half needs a real Divoom: that is what `divoom-pi selftest` is for.
 
 The integration has its own checks, which fake Home Assistant rather than installing it:
 
@@ -255,18 +260,16 @@ python3 tests/integration/config_flow_check.py .
 python3 tests/integration/clock_check.py .
 ```
 
-They import the real config flow, diagnostics and entities and run them. That is weaker than testing
-inside Home Assistant, and it is honest about being so — but it catches the errors that matter here,
-and it has already caught two: a change applied to `async_step_bluetooth` instead of the
-byte-identical `async_step_zeroconf`, and a subparser default silently overwriting a parsed value.
+They import the real config flow, diagnostics and entities and run them. That is weaker than
+testing inside Home Assistant, but it catches the errors that matter here.
 
 ## Credits
 
 This project stands on [@d03n3rfr1tz3](https://github.com/d03n3rfr1tz3)'s work:
 
-- [hass-divoom](https://github.com/d03n3rfr1tz3/hass-divoom) — the Home Assistant integration that
+- [hass-divoom](https://github.com/d03n3rfr1tz3/hass-divoom): the Home Assistant integration that
   does all the interesting work, and the source of the Divoom protocol details used here.
-- [esp32-divoom](https://github.com/d03n3rfr1tz3/esp32-divoom) — the ESP32 gateway firmware whose
+- [esp32-divoom](https://github.com/d03n3rfr1tz3/esp32-divoom): the ESP32 gateway firmware whose
   TCP protocol divoom-pi reimplements.
 
 The integration here is derived from hass-divoom by way of
@@ -276,4 +279,4 @@ upstream fixes back in.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
