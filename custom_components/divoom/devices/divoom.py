@@ -1,7 +1,9 @@
 """Provides class Divoom that encapsulates the Divoom Bluetooth communication."""
 
-import datetime, errno, itertools, logging, math, os, select, socket, time
+import datetime, errno, itertools, logging, math, os, re, select, socket, time
 from PIL import Image, ImageDraw, ImageFont
+
+TEMPERATURE_PATTERN = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)?\s*°?\s*([CF])?\s*$", re.IGNORECASE)
 
 class Divoom:
     """Class Divoom encapsulates the Divoom Bluetooth communication."""
@@ -74,15 +76,32 @@ class Divoom:
 
         return [0x00, 0x00]
 
-    def connect(self):
+    def _parse_temperature(self, value):
+        """Split "25°C" into the number 25.0 and the unit flag (0 = °C, 1 = °F).
+        Both parts are optional, an unparsable value gives (None, None)."""
+        if value == None: return None, None
+        if isinstance(value, bool): return float(value), None
+        if isinstance(value, (int, float)): return float(value), None
+
+        match = TEMPERATURE_PATTERN.match(str(value))
+        if match == None: return None, None
+
+        number, unit = match.groups()
+        if number != None: number = float(number.replace(',', '.'))
+        if unit != None: unit = 1 if unit.upper() == "F" else 0
+        return number, unit
+
+    def connect(self, timeout=10):
         """Open a connection to the Divoom device."""
         if (self.socket == None):
             try:
                 if (self.host == None):
                     self.socket = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+                    self.socket.settimeout(timeout)
                     self.socket.connect((self.mac, self.port))
                 else:
                     self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+                    self.socket.settimeout(timeout)
                     self.socket.connect((self.host, 7777))
 
                 self.socket.settimeout(3)
@@ -880,15 +899,17 @@ class Divoom:
         args += int(value * 15 / 100).to_bytes(1, byteorder='big')
         return self.send_command("set volume", args, skipRead=True)
 
-    def send_weather(self, value=None, weather=None):
-        """Send weather to the Divoom device"""
-        if value == None: return
+    def send_weather(self, value=None, weather=None, unit=None):
+        """Send weather to the Divoom device. The value may be a number or text like "25°C"."""
+        number, parsedUnit = self._parse_temperature(value)
+        if number == None: return
         if weather == None: weather = 0
         if isinstance(weather, str): weather = int(weather)
 
-        unit = value[-2:]
-        number = float(value[0:-2])
-        if unit == "°F":
+        if unit == None: unit = parsedUnit
+        elif isinstance(unit, str): unit = self._parse_temperature(unit)[1]
+
+        if unit == 1:
             number = (number - 32) * 5 / 9
 
         args = []
@@ -896,10 +917,8 @@ class Divoom:
         args += weather.to_bytes(1, byteorder='big')
         result = self.send_command("set temp", args)
 
-        if unit == "°C":
-            self.send_command("set temp type", [0x00])
-        if unit == "°F":
-            self.send_command("set temp type", [0x01])
+        if unit != None:
+            self.send_command("set temp type", [0x01 if unit == 1 else 0x00])
         return result
 
     def clear_input_buffer(self):
