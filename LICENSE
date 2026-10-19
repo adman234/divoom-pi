@@ -1,10 +1,7 @@
 MIT License
 
 Copyright (c) 2026 adman234
-
-This project reimplements the gateway protocol of esp32-divoom and builds on
-protocol details documented in hass-divoom, both MIT-licensed and both
-Copyright (c) 2020 Dirk Sarodnick.
+Copyright (c) 2020 Dirk Sarodnick
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
