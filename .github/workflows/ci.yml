@@ -71,9 +71,7 @@ jobs:
     # The installer is the thing a new user runs first, so actually run it.
     # timeout-minutes matters here: an unguarded bluetoothctl call once hung
     # this job for the full six-hour runner limit.
-    # ubuntu-latest (26.04) lost DNS to the apt mirrors for whole runs in Nov 2026;
-    # 24.04 is closer to Pi OS anyway, so the installer is checked there.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
