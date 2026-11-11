@@ -427,7 +427,7 @@ class ScanResult:
             note = ""
             if not finding.writable:
                 reasons = finding.reasons or [REASON_BLUEPRINT]
-                note = " — {0} ({1})".format(
+                note = ": {0} ({1})".format(
                     labels.get(REASON_MANUAL, REASON_MANUAL),
                     ", ".join(labels.get(reason, reason) for reason in reasons),
                 )
