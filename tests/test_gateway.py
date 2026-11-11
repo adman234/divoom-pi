@@ -27,7 +27,7 @@ from divoom_pi.rfcomm import (  # noqa: E402
     SEND_STILL_CONNECTING,
 )
 
-MAC = "B1:21:81:BF:A8:EB"
+MAC = "11:22:33:44:55:66"
 
 QUIET = logging.getLogger("test-gateway")
 QUIET.addHandler(logging.NullHandler())

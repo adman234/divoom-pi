@@ -191,7 +191,7 @@ class DoctorAvahiCheckTest(unittest.TestCase):
     def test_existing_records_pass_even_unprivileged(self):
         output = self.run_doctor(
             euid=1000,
-            published=["divoom-pi-b12181bfa8eb.service"],
+            published=["divoom-pi-112233445566.service"],
             available="/etc/avahi/services is not writable",
         )
         self.assertIn("[ ok ]", self.avahi_line(output))

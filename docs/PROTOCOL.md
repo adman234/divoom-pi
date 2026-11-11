@@ -32,7 +32,7 @@ one client: Home Assistant.
 | `96 <mac:6>` | Disconnect |
 | `01 ... 02` | A Divoom payload, relayed to the device untouched |
 
-The MAC is six raw bytes in display order, so `B1:21:81:BF:A8:EB` is `b1 21 81 bf a8 eb`.
+The MAC is six raw bytes in display order, so `11:22:33:44:55:66` is `11 22 33 44 55 66`.
 
 The channel is the RFCOMM channel of the device's serial port, and differs per model: 2 for
 Ditoo/Ditoo Mic/Timoo, 4 for Aurabox/Timebox Mini, 1 for everything else. The integration picks a
@@ -99,7 +99,7 @@ mDNS service:
 ```
 type:  _divoom_esp32._tcp
 port:  7777
-txt:   device_mac=B1:21:81:BF:A8:EB
+txt:   device_mac=11:22:33:44:55:66
        device_name=DitooPro-Audio
 ```
 

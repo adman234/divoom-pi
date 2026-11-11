@@ -22,7 +22,7 @@ from custom_components.divoom.const import CLOCK_STYLES  # noqa: E402
 from custom_components.divoom.hub import DivoomHub  # noqa: E402
 from custom_components.divoom.services import tristate  # noqa: E402
 
-MAC = "b1:21:81:bf:a8:eb"
+MAC = "11:22:33:44:55:66"
 checks = []
 
 

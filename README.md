@@ -102,14 +102,14 @@ divoom-pi scan
 ```
 
 ```
-  B1:21:81:BF:A8:EB  DitooPro-Audio  <-- Divoom
-  4C:E1:73:2A:90:11  (no name)
+  11:22:33:44:55:66  DitooPro-Audio  <-- Divoom
+  12:34:56:78:9A:BC  (no name)
 ```
 
 Now prove the whole path works, without involving Home Assistant at all:
 
 ```bash
-divoom-pi selftest B1:21:81:BF:A8:EB --channel 2 --action on
+divoom-pi selftest 11:22:33:44:55:66 --channel 2 --action on
 ```
 
 This connects to the running gateway over TCP, asks it to open Bluetooth, and lights the display

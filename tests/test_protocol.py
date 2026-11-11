@@ -22,15 +22,15 @@ QUIET.propagate = False
 
 class MacTest(unittest.TestCase):
     def test_round_trip(self):
-        self.assertEqual(protocol.format_mac(bytes.fromhex("b12181bfa8eb")), "B1:21:81:BF:A8:EB")
-        self.assertEqual(protocol.parse_mac("b1:21:81:bf:a8:eb"), bytes.fromhex("b12181bfa8eb"))
+        self.assertEqual(protocol.format_mac(bytes.fromhex("112233445566")), "11:22:33:44:55:66")
+        self.assertEqual(protocol.parse_mac("11:22:33:44:55:66"), bytes.fromhex("112233445566"))
 
     def test_accepts_alternative_spellings(self):
-        for spelling in ("B1:21:81:BF:A8:EB", "b1-21-81-bf-a8-eb", "b12181bfa8eb"):
-            self.assertEqual(protocol.normalize_mac(spelling), "B1:21:81:BF:A8:EB")
+        for spelling in ("11:22:33:44:55:66", "11-22-33-44-55-66", "112233445566"):
+            self.assertEqual(protocol.normalize_mac(spelling), "11:22:33:44:55:66")
 
     def test_rejects_nonsense(self):
-        for bad in ("", "not a mac", "b1:21:81:bf:a8"):
+        for bad in ("", "not a mac", "11:22:33:44:55"):
             with self.assertRaises(ValueError):
                 protocol.parse_mac(bad)
 
@@ -89,9 +89,9 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(len(message) - len(payload) - 2, 4)
 
     def test_advertisement_layout(self):
-        advert = protocol.advertisement("B1:21:81:BF:A8:EB", "Ditoo")
+        advert = protocol.advertisement("11:22:33:44:55:66", "Ditoo")
         self.assertEqual(advert[0], protocol.ADVERTISE)
-        self.assertEqual(advert[1:7], bytes.fromhex("b12181bfa8eb"))
+        self.assertEqual(advert[1:7], bytes.fromhex("112233445566"))
         self.assertEqual(advert[7], 5)
         self.assertEqual(advert[8:], b"Ditoo")
 
@@ -100,7 +100,7 @@ class StripAdvertisementsTest(unittest.TestCase):
     """The gateway announces devices to its clients; those are not replies."""
 
     def setUp(self):
-        self.advert = protocol.advertisement("B1:21:81:BF:A8:EB", "DitooPro-Audio")
+        self.advert = protocol.advertisement("11:22:33:44:55:66", "DitooPro-Audio")
 
     def test_advertisement_alone_leaves_nothing(self):
         self.assertEqual(protocol.strip_advertisements(self.advert), b"")
@@ -128,25 +128,25 @@ class ParserTest(unittest.TestCase):
         self.parser = protocol.MessageParser(QUIET)
 
     def connect_bytes(self, channel=None):
-        raw = bytes([protocol.CMD_CONNECT]) + protocol.parse_mac("B1:21:81:BF:A8:EB")
+        raw = bytes([protocol.CMD_CONNECT]) + protocol.parse_mac("11:22:33:44:55:66")
         return raw if channel is None else raw + bytes([channel])
 
     def test_connect_with_channel(self):
         messages = self.parser.feed(self.connect_bytes(2))
-        self.assertEqual(messages, [protocol.Connect("B1:21:81:BF:A8:EB", 2)])
+        self.assertEqual(messages, [protocol.Connect("11:22:33:44:55:66", 2)])
 
     def test_connect_without_channel_defaults_to_one(self):
         messages = self.parser.feed(self.connect_bytes())
-        self.assertEqual(messages, [protocol.Connect("B1:21:81:BF:A8:EB", 1)])
+        self.assertEqual(messages, [protocol.Connect("11:22:33:44:55:66", 1)])
 
     def test_connect_split_across_reads(self):
         raw = self.connect_bytes(2)
         self.assertEqual(self.parser.feed(raw[:3]), [])
-        self.assertEqual(self.parser.feed(raw[3:]), [protocol.Connect("B1:21:81:BF:A8:EB", 2)])
+        self.assertEqual(self.parser.feed(raw[3:]), [protocol.Connect("11:22:33:44:55:66", 2)])
 
     def test_disconnect(self):
-        raw = bytes([protocol.CMD_DISCONNECT]) + protocol.parse_mac("B1:21:81:BF:A8:EB")
-        self.assertEqual(self.parser.feed(raw), [protocol.Disconnect("B1:21:81:BF:A8:EB")])
+        raw = bytes([protocol.CMD_DISCONNECT]) + protocol.parse_mac("11:22:33:44:55:66")
+        self.assertEqual(self.parser.feed(raw), [protocol.Disconnect("11:22:33:44:55:66")])
 
     def test_payload(self):
         ping = protocol.ping()
@@ -162,7 +162,7 @@ class ParserTest(unittest.TestCase):
         ping = protocol.ping()
         messages = self.parser.feed(self.connect_bytes(2) + ping)
         self.assertEqual(
-            messages, [protocol.Connect("B1:21:81:BF:A8:EB", 2), protocol.Payload(ping)]
+            messages, [protocol.Connect("11:22:33:44:55:66", 2), protocol.Payload(ping)]
         )
 
     def test_payload_containing_an_unescaped_0x02(self):
