@@ -33,6 +33,14 @@ class AbortFlow(Exception):
         self.reason = reason
 
 
+class HomeAssistantError(Exception):
+    pass
+
+
+class ServiceValidationError(HomeAssistantError):
+    pass
+
+
 class ConfigFlow:
     def __init_subclass__(cls, domain=None, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -73,8 +81,23 @@ class ConfigFlow:
     def async_create_entry(self, title=None, data=None):
         return {"type": "create_entry", "title": title, "data": data}
 
-    def async_update_reload_and_abort(self, entry, data=None, reason="reconfigure_successful",
-                                      **kwargs):
+    def async_show_menu(self, step_id=None, menu_options=None, description_placeholders=None):
+        return {"type": "menu", "step_id": step_id, "menu_options": menu_options}
+
+    def _get_reconfigure_entry(self):
+        entry = self.hass.config_entries.async_get_entry(self.context.get("entry_id"))
+        if entry is None:
+            raise AbortFlow("unknown_entry")
+        return entry
+
+    def add_suggested_values_to_schema(self, data_schema, suggested_values):
+        self.suggested_values = dict(suggested_values or {})
+        return data_schema
+
+    def async_update_reload_and_abort(self, entry, data=None, data_updates=None,
+                                      reason="reconfigure_successful", **kwargs):
+        if data_updates is not None:
+            data = {**entry.data, **data_updates}
         entry.data = data
         entry.reloaded = True
         return {"type": "abort", "reason": reason, "data": data}
@@ -128,16 +151,25 @@ module("homeassistant")
 module("homeassistant.const", CONF_NAME="name", CONF_HOST="host", CONF_MAC="mac",
        CONF_PORT="port", Platform=Platform)
 module("homeassistant.core", HomeAssistant=object, ServiceCall=object,
-       callback=lambda func: func, HomeAssistantError=Exception)
-module("homeassistant.exceptions", HomeAssistantError=Exception)
+       callback=lambda func: func, HomeAssistantError=HomeAssistantError)
+module("homeassistant.exceptions", HomeAssistantError=HomeAssistantError,
+       ServiceValidationError=ServiceValidationError)
 module("homeassistant.config_entries", ConfigFlow=ConfigFlow, ConfigEntry=ConfigEntry,
-       HANDLERS=_Registry())
+       ConfigFlowResult=dict, HANDLERS=_Registry())
 module("homeassistant.data_entry_flow", AbortFlow=AbortFlow, FlowResult=dict)
 module("homeassistant.helpers")
 _cv = module("homeassistant.helpers.config_validation", port=vol.Coerce(int), string=str)
 # config_validation exposes dozens of validators; anything this integration
 # reaches for that is not needed to exercise the flow becomes a pass-through.
-_cv.__getattr__ = lambda name: (lambda value=None: value)
+# Validators and validator factories (has_at_least_one_key, ...) alike; the
+# action schemas are built at import but never run by these checks.
+def _cv_any(*args, **kwargs):
+    if len(args) == 1 and not kwargs and not isinstance(args[0], str):
+        return args[0]
+    return _cv_any
+
+
+_cv.__getattr__ = lambda name: _cv_any
 module("homeassistant.helpers.device_registry", CONNECTION_BLUETOOTH="bluetooth",
        DeviceInfo=dict)
 module("homeassistant.helpers.entity", Entity=object)
@@ -153,7 +185,8 @@ module("homeassistant.components.bluetooth", BluetoothServiceInfo=object,
        BluetoothServiceInfoBleak=object, async_discovered_service_info=lambda *a, **k: [])
 module("homeassistant.components.diagnostics", async_redact_data=lambda data, keys: data)
 module("homeassistant.components.notify", SERVICE_NOTIFY="notify", ATTR_MESSAGE="message",
-       ATTR_TITLE="title", ATTR_DATA="data", BaseNotificationService=object)
+       ATTR_TITLE="title", ATTR_DATA="data", BaseNotificationService=object,
+       PLATFORM_SCHEMA=vol.Schema({}, extra=vol.ALLOW_EXTRA))
 module("homeassistant.helpers.discovery", async_load_platform=lambda *a, **k: None)
 module("homeassistant.helpers.typing", ConfigType=dict, DiscoveryInfoType=dict,
        HomeAssistantType=object)
@@ -163,7 +196,39 @@ module("homeassistant.util", slugify=lambda value: str(value).lower().replace(" 
 module("homeassistant.helpers.entity_registry", async_get=lambda hass: None)
 module("homeassistant.helpers.entity_component", EntityComponent=object)
 module("homeassistant.helpers.event", async_track_time_interval=lambda *a, **k: None)
-module("homeassistant.helpers.service", async_extract_config_entry_ids=lambda *a, **k: set())
+module("homeassistant.helpers.service", async_extract_config_entry_ids=lambda *a, **k: set(),
+       async_set_service_schema=lambda *a, **k: None)
+
+# Imported by upstream's services, migration and repairs modules.
+module("homeassistant.helpers.start", async_at_started=lambda *a, **k: None)
+module("homeassistant.helpers.issue_registry", IssueSeverity=types.SimpleNamespace(
+       WARNING="warning", ERROR="error"), async_create_issue=lambda *a, **k: None,
+       async_delete_issue=lambda *a, **k: None, async_get=lambda hass: None)
+module("homeassistant.helpers.translation", async_get_translations=lambda *a, **k: {})
+module("homeassistant.helpers.aiohttp_client", async_get_clientsession=lambda hass: None)
+module("homeassistant.helpers.storage", Store=object)
+module("homeassistant.components.automation")
+module("homeassistant.components.script")
+module("homeassistant.components.repairs", RepairsFlow=object, ConfirmRepairFlow=object)
+module("homeassistant.config", AUTOMATION_CONFIG_PATH="automations.yaml",
+       SCRIPT_CONFIG_PATH="scripts.yaml")
+module("homeassistant.util.dt", utcnow=lambda: None)
+module("homeassistant.util.file", write_utf8_file_atomic=lambda *a, **k: None)
+module("homeassistant.util.yaml", dump=lambda *a, **k: "", load_yaml=lambda *a, **k: {},
+       load_yaml_dict=lambda *a, **k: {}, parse_yaml=lambda *a, **k: {})
+module("bluetooth_adapters", ADAPTER_ADDRESS="address", DEFAULT_ADDRESS="00:00:00:00:00:00",
+       adapter_human_name=lambda adapter, address: adapter, get_adapters=lambda: None)
+for _name in ("aiohttp",):
+    try:
+        __import__(_name)
+    except ImportError:
+        module(_name, ClientError=Exception, ClientTimeout=lambda **k: None)
+# The protocol classes import Pillow at module level but only use it for
+# images, which these checks never send.
+try:
+    import PIL  # noqa: F401
+except ImportError:
+    module("PIL", Image=object, ImageDraw=object, ImageFont=object, ImageOps=object)
 
 
 

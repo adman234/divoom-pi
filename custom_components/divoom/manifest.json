@@ -12,7 +12,16 @@
       "local_name": "Divoom*"
     },
     {
+      "local_name": "FlowToo*"
+    },
+    {
+      "local_name": "MiniToo*"
+    },
+    {
       "local_name": "Pixoo*"
+    },
+    {
+      "local_name": "Tiivoo*"
     },
     {
       "local_name": "Timebox*"
@@ -39,9 +48,10 @@
     "divoom"
   ],
   "requirements": [
-    "pillow>=7.2.0"
+    "pillow>=7.2.0",
+    "zstandard>=0.21.0"
   ],
-  "version": "2.1.1",
+  "version": "2.2.0",
   "zeroconf": [
     {
       "type": "_divoom_esp32._tcp.local.",
@@ -64,7 +74,25 @@
     {
       "type": "_divoom_esp32._tcp.local.",
       "properties": {
+        "device_name": "flowtoo*"
+      }
+    },
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
+        "device_name": "minitoo*"
+      }
+    },
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
         "device_name": "pixoo*"
+      }
+    },
+    {
+      "type": "_divoom_esp32._tcp.local.",
+      "properties": {
+        "device_name": "tiivoo*"
       }
     },
     {

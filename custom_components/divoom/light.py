@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import CLOCK_ID_DEVICE_TYPES, DOMAIN
 from .entity import DivoomEntity
 from .hub import DivoomHub
 
@@ -23,7 +23,11 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Divoom light from a config entry."""
     hub: DivoomHub = hass.data[DOMAIN]["hubs"][entry.entry_id]
-    async_add_entities([DivoomLight(hub), DivoomClockLight(hub)])
+    entities = [DivoomLight(hub)]
+    # clock-id models pick a clock face by id and ignore style and colour
+    if hub.device_type not in CLOCK_ID_DEVICE_TYPES:
+        entities.append(DivoomClockLight(hub))
+    async_add_entities(entities)
 
 
 class DivoomLight(DivoomEntity, LightEntity):

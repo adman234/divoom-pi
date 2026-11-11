@@ -58,12 +58,17 @@ async def async_get_config_entry_diagnostics(
 
     device = hub.device
     if device is None:
-        # create_device() returns None for an unrecognised device type, and
-        # the failure only surfaces later as an AttributeError.
+        # The connection belongs to the notify service. It is missing until
+        # the notify platform has loaded, and its device is None when the
+        # device type has no protocol implementation.
+        if hub.service is None:
+            error = "the notify service for this device is not loaded"
+        else:
+            error = "no protocol implementation for device type {!r}".format(hub.device_type)
         diagnostics["hub"] = {
             "host": hub.host,
             "device_type": hub.device_type,
-            "error": "no protocol implementation for device type {!r}".format(hub.device_type),
+            "error": error,
         }
         return diagnostics
 

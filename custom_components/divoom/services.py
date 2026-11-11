@@ -1,269 +1,491 @@
-"""Device-targeted actions for the Divoom integration."""
-from __future__ import annotations
+"""Domain services for divoom, one per device mode."""
+import logging, os, re
+from collections import Counter
+import aiohttp
+import voluptuous as vol
 
-import logging
-import os
+from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service import async_set_service_schema
+from homeassistant.util import slugify
+from homeassistant.util.yaml import load_yaml_dict
 
-from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr, entity_registry as er
-
-from .const import DOMAIN
-from .hub import DivoomHub
+from homeassistant.const import CONF_MAC, CONF_NAME
+from .const import CONF_DEVICE, CONF_DEVICE_TYPE, DOMAIN
+from .devices.divoom import DivoomUnsupportedError
+from .notify import (
+    PARAM_ALARMMODE,
+    PARAM_AUDIOMODE,
+    PARAM_BACKGROUND,
+    PARAM_BACKGROUND_COLOR,
+    PARAM_BACKGROUNDMODE,
+    PARAM_BRIGHTNESS,
+    PARAM_CALENDAR,
+    PARAM_CLOCK,
+    PARAM_CLOCK_ID,
+    PARAM_COLOR,
+    PARAM_COUNTDOWN,
+    PARAM_EFFECT,
+    PARAM_FILE,
+    PARAM_FONT,
+    PARAM_FOREGROUND_COLOR,
+    PARAM_FREQUENCY,
+    PARAM_HOT,
+    PARAM_NUMBER,
+    PARAM_PLAYER1,
+    PARAM_PLAYER2,
+    PARAM_RAW,
+    PARAM_SIZE,
+    PARAM_SLEEPMODE,
+    PARAM_STREAMMODE,
+    PARAM_TEMP,
+    PARAM_TEXT,
+    PARAM_TIME,
+    PARAM_TRIGGERMODE,
+    PARAM_TWENTYFOUR,
+    PARAM_UNIT,
+    PARAM_VALUE,
+    PARAM_VOLUME,
+    PARAM_VOLUME1,
+    PARAM_VOLUME2,
+    PARAM_VOLUME3,
+    PARAM_VOLUME4,
+    PARAM_VOLUME5,
+    PARAM_VOLUME6,
+    PARAM_VOLUME7,
+    PARAM_VOLUME8,
+    PARAM_WEATHER,
+    PARAM_WEEKDAY,
+    WEATHER_MODES,
+)
 
 _LOGGER = logging.getLogger(__package__)
 
-GAME_CONTROLS = {"go": 0, "left": 1, "right": 2, "up": 3, "down": 4, "ok": 5}
-KEYBOARD_ACTIONS = {"toggle": 0, "next": 1, "previous": -1}
+SERVICES_YAML = os.path.join(os.path.dirname(__file__), "services.yaml")
 
-WEATHER_MODES = {
-    'clear-night': 1, 'cloudy': 3, 'exceptional': 3, 'fog': 9, 'hail': 6,
-    'lightning': 5, 'lightning-rainy': 5, 'partlycloudy': 3, 'pouring': 6,
-    'rainy': 6, 'snowy': 8, 'snowy-rainy': 8, 'sunny': 1, 'windy': 3,
-    'windy-variant': 3,
+TARGET_SCHEMA = {
+    vol.Required(CONF_DEVICE): cv.string,
 }
 
+RGB = vol.All(
+    [vol.All(vol.Coerce(int), vol.Range(min=0, max=255))], vol.Length(min=3, max=3)
+)
 
+PERCENT = vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
 
-def tristate(value):
-    """Normalise a three-state service field: True, False, or None for "leave alone".
+# the upper bounds are what the protocol packs the value into, not how many
+# styles/effects/designs a concrete device offers
+BYTE = vol.All(vol.Coerce(int), vol.Range(min=0, max=255))
+WORD = vol.All(vol.Coerce(int), vol.Range(min=0, max=65535))
 
-    Fields like `hot` mean three different things - turn it on, turn it off, or
-    do not touch it - and a Home Assistant boolean selector cannot express that:
-    a toggle left alone and a toggle switched off both arrive the same way, so
-    turning the slideshow off was impossible through the UI. They are select
-    fields now, and this accepts the strings alongside the booleans that
-    existing automations and YAML will still be sending.
-    """
-    if value is None or isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in ("on", "true", "yes", "1"):
-            return True
-        if lowered in ("off", "false", "no", "0"):
-            return False
-        return None
-    return bool(value)
+# beyond 15 show_clock deactivates the clock instead of picking a style
+CLOCK = vol.All(vol.Coerce(int), vol.Range(min=0, max=15))
 
+# the clock id the 128x128 devices pick from, unrelated to the style above
+CLOCK_ID = vol.All(vol.Coerce(int), vol.Range(min=0))
 
-def _resolve_hubs(hass: HomeAssistant, call: ServiceCall) -> list[DivoomHub]:
-    """Resolve the targeted devices/entities of a service call into hubs."""
-    device_ids = call.data.get("device_id") or []
-    if isinstance(device_ids, str):
-        device_ids = [device_ids]
-    device_ids = list(device_ids)
+# device types that pick clocks by id instead of style
+CLOCK_ID_TYPES = {"flowtoo", "minitoo", "tiivoo2"}
+CLOCK_CATALOG_URL = "https://app.divoom-gz.com/Channel/{}"
+CLOCK_CATEGORIES = ("Normal", "Nature&Weather", "Retro", "Ambient", "Plan", "Music Reactive", "Pixel Art", "HOLIDAYS")
+CLOCK_PAGE_SIZE = 30
 
-    entity_ids = call.data.get("entity_id") or []
-    if isinstance(entity_ids, str):
-        entity_ids = [entity_ids]
+# device types that take one volume per white noise sound in sleep mode
+WHITENOISE_TYPES = {"minitoo", "tiivoo2"}
 
-    entity_registry = er.async_get(hass)
-    for entity_id in entity_ids:
-        entry = entity_registry.async_get(entity_id)
-        if entry is not None and entry.device_id is not None:
-            device_ids.append(entry.device_id)
+# device types that take a text effect and background for lyrics
+LYRIC_CONFIG_TYPES = {"minitoo", "tiivoo2"}
+LYRIC_EFFECT = vol.All(vol.Coerce(int), vol.Range(min=0, max=5))
+LYRIC_BACKGROUND = vol.All(vol.Coerce(int), vol.Range(min=0, max=20))
 
-    device_registry = dr.async_get(hass)
-    hubs: dict[str, DivoomHub] = hass.data.get(DOMAIN, {}).get("hubs", {})
+# the FM broadcast bands in use worldwide, from OIRT up to ITU
+FREQUENCY = vol.All(vol.Coerce(float), vol.Range(min=64, max=108))
 
-    resolved: list[DivoomHub] = []
-    for device_id in device_ids:
-        device = device_registry.async_get(device_id)
-        if device is None:
-            continue
-        macs = [identifier[1] for identifier in device.identifiers if identifier[0] == DOMAIN]
-        for hub in hubs.values():
-            if hub.mac in macs and hub not in resolved:
-                resolved.append(hub)
+KEYBOARD_VALUES = ["previous", "toggle", "next"]
+PLAYSTATE_VALUES = ["previous", "pause", "play", "next"]
+RADIO_VALUES = ["bluetooth", "fm", "linein", "sdcard", "usb"]
+GAMECONTROL_VALUES = ["go", "left", "right", "up", "down", "ok"]
+TEMPERATURE_UNITS = ["°C", "°F"]
 
-    if not resolved:
-        raise HomeAssistantError("No Divoom device was targeted. Choose a device in the action's target.")
-    return resolved
+# a plain number from the UI, or the combined "25°C" the README documents
+TEMPERATURE = vol.Any(
+    vol.Coerce(float),
+    vol.All(cv.string, vol.Match(r"^\s*-?\d+([.,]\d+)?\s*°?\s*[CF]\s*$", re.IGNORECASE)),
+)
 
+SERVICE_SCHEMAS = {
+    "clock": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Optional(PARAM_CLOCK): CLOCK,
+        vol.Optional(PARAM_CLOCK_ID): CLOCK_ID,
+        vol.Optional(PARAM_TWENTYFOUR): cv.boolean,
+        vol.Optional(PARAM_WEATHER): cv.boolean,
+        vol.Optional(PARAM_TEMP): cv.boolean,
+        vol.Optional(PARAM_CALENDAR): cv.boolean,
+        vol.Optional(PARAM_COLOR): RGB,
+        vol.Optional(PARAM_HOT): cv.boolean,
+    }),
+    "light": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_BRIGHTNESS): PERCENT,
+        vol.Optional(PARAM_COLOR): RGB,
+        vol.Optional(PARAM_EFFECT): BYTE,
+    }),
+    "on": vol.Schema({
+        **TARGET_SCHEMA,
+    }),
+    "off": vol.Schema({
+        **TARGET_SCHEMA,
+    }),
+    "brightness": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_BRIGHTNESS): PERCENT,
+    }),
+    "image": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_FILE): cv.string,
+        vol.Optional(PARAM_TIME): WORD,
+    }),
+    "text": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_TEXT): cv.string,
+        vol.Optional(PARAM_FONT): cv.string,
+        # the font size goes to PIL, not into a byte, so there is nothing to cap
+        vol.Optional(PARAM_SIZE): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional(PARAM_TIME): WORD,
+        vol.Optional(PARAM_FOREGROUND_COLOR): RGB,
+        vol.Optional(PARAM_BACKGROUND_COLOR): RGB,
+    }),
+    "design": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_NUMBER): BYTE,
+    }),
+    "effects": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_NUMBER): BYTE,
+    }),
+    "visualization": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_NUMBER): BYTE,
+        vol.Optional(PARAM_FOREGROUND_COLOR): RGB,
+        vol.Optional(PARAM_BACKGROUND_COLOR): RGB,
+    }),
+    "signal": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_NUMBER): BYTE,
+    }),
+    "alarm": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Optional(PARAM_NUMBER): BYTE,
+        vol.Optional(PARAM_VALUE): cv.string,
+        vol.Optional(PARAM_WEEKDAY): cv.weekdays,
+        vol.Optional(PARAM_ALARMMODE): BYTE,
+        vol.Optional(PARAM_TRIGGERMODE): BYTE,
+        vol.Optional(PARAM_FREQUENCY): FREQUENCY,
+        vol.Optional(PARAM_VOLUME): PERCENT,
+    }),
+    "countdown": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): cv.boolean,
+        vol.Optional(PARAM_COUNTDOWN): cv.string,
+    }),
+    "timer": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): cv.boolean,
+    }),
+    "memorial": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Optional(PARAM_NUMBER): BYTE,
+        vol.Optional(PARAM_VALUE): cv.string,
+        vol.Optional(PARAM_TEXT): cv.string,
+    }),
+    "scoreboard": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Optional(PARAM_PLAYER1): WORD,
+        vol.Optional(PARAM_PLAYER2): WORD,
+    }),
+    "noise": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): cv.boolean,
+    }),
+    "sleep": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): cv.boolean,
+        vol.Optional(PARAM_TIME): BYTE,
+        vol.Optional(PARAM_SLEEPMODE): BYTE,
+        vol.Optional(PARAM_FREQUENCY): FREQUENCY,
+        vol.Optional(PARAM_VOLUME): PERCENT,
+        vol.Optional(PARAM_COLOR): RGB,
+        vol.Optional(PARAM_BRIGHTNESS): PERCENT,
+        vol.Optional(PARAM_VOLUME1): PERCENT,
+        vol.Optional(PARAM_VOLUME2): PERCENT,
+        vol.Optional(PARAM_VOLUME3): PERCENT,
+        vol.Optional(PARAM_VOLUME4): PERCENT,
+        vol.Optional(PARAM_VOLUME5): PERCENT,
+        vol.Optional(PARAM_VOLUME6): PERCENT,
+        vol.Optional(PARAM_VOLUME7): PERCENT,
+        vol.Optional(PARAM_VOLUME8): PERCENT,
+    }),
+    "datetime": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Optional(PARAM_VALUE): cv.string,
+    }),
+    "equalizer": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_NUMBER): BYTE,
+        vol.Optional(PARAM_AUDIOMODE): cv.boolean,
+        vol.Optional(PARAM_BACKGROUNDMODE): cv.boolean,
+        vol.Optional(PARAM_STREAMMODE): cv.boolean,
+    }),
+    "volume": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VOLUME): PERCENT,
+    }),
+    "playstate": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): vol.Any(vol.In(PLAYSTATE_VALUES), cv.boolean),
+    }),
+    "radio": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): vol.Any(vol.In(RADIO_VALUES), cv.boolean),
+        vol.Optional(PARAM_FREQUENCY): FREQUENCY,
+    }),
+    "lyrics": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Optional(PARAM_EFFECT): LYRIC_EFFECT,
+        vol.Optional(PARAM_BACKGROUND): LYRIC_BACKGROUND,
+    }),
+    "keyboard": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): vol.In(KEYBOARD_VALUES),
+    }),
+    "game": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Optional(PARAM_VALUE): BYTE,
+    }),
+    "gamecontrol": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): vol.In(GAMECONTROL_VALUES),
+    }),
+    "weather": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): TEMPERATURE,
+        vol.Optional(PARAM_UNIT): vol.In(TEMPERATURE_UNITS),
+        vol.Optional(PARAM_WEATHER): vol.Any(vol.In(WEATHER_MODES), BYTE),
+    }),
+    "temperature": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_VALUE): vol.In(TEMPERATURE_UNITS),
+        vol.Optional(PARAM_COLOR): RGB,
+    }),
+    "raw": vol.Schema({
+        **TARGET_SCHEMA,
+        vol.Required(PARAM_RAW): vol.All(cv.ensure_list, vol.Length(min=1)),
+    }),
+    "connect": vol.Schema({
+        **TARGET_SCHEMA,
+    }),
+    "disconnect": vol.Schema({
+        **TARGET_SCHEMA,
+    }),
+}
 
-def async_setup_services(hass: HomeAssistant) -> None:
-    """Register the divoom.* actions once."""
-    if hass.services.has_service(DOMAIN, "show_image"):
-        return
+SERVICE_RULES = {
+    "clock": cv.has_at_least_one_key(PARAM_CLOCK, PARAM_CLOCK_ID),
+}
 
-    async def _run(call: ServiceCall, command: str, *args, **kwargs) -> None:
-        for hub in _resolve_hubs(hass, call):
-            await hub.async_execute(command, *args, **kwargs)
+def device_slug(entry) -> str:
+    """The name the device is addressed by, unchanged by renaming the entry."""
+    return slugify(entry.data.get(CONF_NAME) or entry.title)
 
-    async def show_image(call: ServiceCall) -> None:
-        for hub in _resolve_hubs(hass, call):
-            image_path = os.path.join(hub.media_directory, call.data["file"])
-            await hub.async_execute("show_image", image_path, time=call.data.get("time"))
+def _matches(entry, slug) -> bool:
+    return slug in (device_slug(entry), slugify(entry.title))
 
-    async def show_text(call: ServiceCall) -> None:
-        for hub in _resolve_hubs(hass, call):
-            font = call.data.get("font")
-            font_path = os.path.join(hub.font_directory, font) if font else None
-            color1 = call.data.get("color")
-            color2 = call.data.get("background_color")
-            await hub.async_execute(
-                "show_text", call.data["text"], font_path,
-                size=call.data.get("size"), time=call.data.get("time"),
-                color1=list(color1) if color1 else None,
-                color2=list(color2) if color2 else None,
+def _find_entry(hass: HomeAssistant, device: str):
+    """The entry a device value points at, by name, by slug or by raw id."""
+    entry = hass.config_entries.async_get_entry(device)
+    if entry is not None and entry.domain == DOMAIN:
+        return entry
+
+    slug = slugify(device)
+    entries = [entry for entry in hass.config_entries.async_entries(DOMAIN) if _matches(entry, slug)]
+    if len(entries) > 1:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="device_ambiguous",
+            translation_placeholders={"device": device},
+        )
+
+    return entries[0] if entries else None
+
+def _resolve_target(hass: HomeAssistant, data):
+    device = data[CONF_DEVICE]
+    entry = _find_entry(hass, device)
+    if entry is None:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="device_not_found",
+            translation_placeholders={"device": device},
+        )
+
+    loadedServices = hass.data.get(DOMAIN, {}).get('loaded', {})
+    mac = entry.data.get(CONF_MAC)
+    if mac not in loadedServices:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="device_not_loaded",
+            translation_placeholders={"title": entry.title},
+        )
+
+    return loadedServices[mac]
+
+def _make_handler(mode: str):
+    async def _handle(call: ServiceCall) -> None:
+        service = _resolve_target(call.hass, call.data)
+        params = {key: value for key, value in call.data.items() if key != CONF_DEVICE}
+
+        try:
+            result = await call.hass.async_add_executor_job(service.call_mode, mode, params)
+        except DivoomUnsupportedError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="mode_unsupported",
+                translation_placeholders={"device": err.device, "mode": mode},
+            ) from err
+        except OSError as err:
+            _LOGGER.exception("the %s action lost the connection", mode)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="mode_failed",
+                translation_placeholders={"mode": mode},
+            ) from err
+
+        if not result:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="mode_failed",
+                translation_placeholders={"mode": mode},
             )
 
-    async def show_clock(call: ServiceCall) -> None:
-        color = call.data.get("color")
-        await _run(
-            call, "show_clock",
-            clock=call.data.get("style"),
-            twentyfour=tristate(call.data.get("twentyfour")),
-            weather=call.data.get("weather"),
-            temp=call.data.get("temperature"),
-            calendar=call.data.get("calendar"),
-            color=list(color) if color else None,
-            hot=tristate(call.data.get("hot")),
-        )
+    return _handle
 
-    async def show_effects(call: ServiceCall) -> None:
-        await _run(call, "show_effects", call.data.get("number", 0))
+@callback
+def async_setup_services(hass: HomeAssistant) -> None:
+    for mode, schema in SERVICE_SCHEMAS.items():
+        if mode in SERVICE_RULES: schema = vol.All(schema, SERVICE_RULES[mode])
+        hass.services.async_register(DOMAIN, mode, _make_handler(mode), schema=schema)
 
-    async def show_visualization(call: ServiceCall) -> None:
-        await _run(call, "show_visualization", call.data.get("number", 0), None, None)
+    _LOGGER.debug("Divoom: successfully registered {} services".format(len(SERVICE_SCHEMAS)))
 
-    async def show_design(call: ServiceCall) -> None:
-        await _run(call, "show_design", number=call.data.get("number"))
+def _device_options(hass: HomeAssistant):
+    """The configured devices as dropdown options. Each value must resolve to
+    exactly one entry, so a shared name falls back to the title slug, then to
+    the entry id."""
+    entries = hass.config_entries.async_entries(DOMAIN)
 
-    async def show_lyrics(call: ServiceCall) -> None:
-        await _run(call, "show_lyrics")
+    def value(entry):
+        for slug in (device_slug(entry), slugify(entry.title)):
+            if sum(_matches(other, slug) for other in entries) == 1:
+                return slug
+        return entry.entry_id
 
-    async def show_scoreboard(call: ServiceCall) -> None:
-        await _run(call, "show_scoreboard", blue=call.data.get("player1", 0), red=call.data.get("player2", 0))
+    return [{"value": value(entry), "label": entry.title} for entry in entries]
 
-    async def show_timer(call: ServiceCall) -> None:
-        await _run(call, "show_timer", value=1 if call.data.get("start", True) else 0)
+def _dropdown(options, custom_value=True):
+    return {"select": {
+        "options": options,
+        "mode": "dropdown",
+        "custom_value": custom_value,
+        "sort": True,
+    }}
 
-    async def show_countdown(call: ServiceCall) -> None:
-        await _run(
-            call, "show_countdown",
-            value=1 if call.data.get("start", True) else 0,
-            countdown=call.data.get("countdown"),
-        )
+async def _fetch_clock_options(hass: HomeAssistant):
+    """The clocks of the public Divoom catalog, as the UI dropdown wants them."""
+    session = async_get_clientsession(hass)
 
-    async def show_noise(call: ServiceCall) -> None:
-        await _run(call, "show_noise", value=1 if call.data.get("start", True) else 0)
+    async def post(command, body=None):
+        async with session.post(CLOCK_CATALOG_URL.format(command), json=body, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            response.raise_for_status()
+            return await response.json(content_type=None)
 
-    async def show_radio(call: ServiceCall) -> None:
-        await _run(
-            call, "show_radio",
-            value=1 if call.data.get("on", True) else 0,
-            frequency=call.data.get("frequency"),
-        )
+    labels = {}
+    for dial_type in (await post("GetDialType")).get("DialTypeList", []):
+        category = dial_type.split("（")[0].strip()
+        if category not in CLOCK_CATEGORIES: continue
 
-    async def show_sleep(call: ServiceCall) -> None:
-        color = call.data.get("color")
-        await _run(
-            call, "show_sleep",
-            1 if call.data.get("start", True) else 0,
-            call.data.get("time"),
-            call.data.get("sleepmode"),
-            call.data.get("volume"),
-            list(color) if color else None,
-            call.data.get("brightness"),
-            call.data.get("frequency"),
-        )
+        for page in range(1, 51):
+            dials = (await post("GetDialList", {"DialType": dial_type, "Page": page})).get("DialList", [])
+            for dial in dials:
+                name = dial["Name"].replace("\\'", "'").strip()
+                labels.setdefault(dial["ClockId"], "{} · {}".format(category, name))
+            if len(dials) < CLOCK_PAGE_SIZE: break
 
-    async def show_equalizer(call: ServiceCall) -> None:
-        await _run(
-            call, "show_equalizer", call.data.get("number", 0),
-            audioMode=call.data.get("audiomode", False),
-            backgroundMode=call.data.get("backgroundmode", False),
-            streamMode=call.data.get("streammode", False),
-        )
+    counts = Counter(labels.values())
+    return [
+        {"value": str(clock_id), "label": label if counts[label] == 1 else "{} ({})".format(label, clock_id)}
+        for clock_id, label in labels.items()
+    ]
 
-    async def play_game(call: ServiceCall) -> None:
-        await _run(call, "show_game", value=call.data.get("number"))
+async def _load_clock_options(hass: HomeAssistant) -> None:
+    domainConfig = hass.data[DOMAIN]
+    try:
+        clocks = await _fetch_clock_options(hass)
+    except Exception as err: # only UI sugar, the number field works without it
+        _LOGGER.warning("Divoom: clock catalog unavailable: {}".format(err))
+        return
+    finally:
+        domainConfig.pop('clocks_task', None)
 
-    async def game_control(call: ServiceCall) -> None:
-        action = call.data.get("action", "go")
-        await _run(call, "send_gamecontrol", value=GAME_CONTROLS.get(action, 0))
+    if clocks:
+        domainConfig['clocks'] = clocks
+        await async_refresh_service_descriptions(hass)
 
-    async def set_keyboard(call: ServiceCall) -> None:
-        action = call.data.get("action", "toggle")
-        await _run(call, "send_keyboard", value=KEYBOARD_ACTIONS.get(action, 0))
+def _clock_fields(fields, types, clocks):
+    """Keep the sections the configured device types understand."""
+    fields = dict(fields)
+    if not types & CLOCK_ID_TYPES:
+        fields.pop("catalog")
+    elif clocks:
+        catalog = fields["catalog"]
+        clock_id = {**catalog["fields"][PARAM_CLOCK_ID], "selector": _dropdown(clocks)}
+        fields["catalog"] = {**catalog, "fields": {**catalog["fields"], PARAM_CLOCK_ID: clock_id}}
+    if types <= CLOCK_ID_TYPES:
+        fields.pop("classic")
+    return fields
 
-    async def set_playstate(call: ServiceCall) -> None:
-        await _run(call, "send_playstate", value=1 if call.data.get("playing", True) else 0)
+def _drop_section(fields, section, types, supported):
+    """Drop a section none of the configured device types understands."""
+    if types & supported: return fields
+    return {key: value for key, value in fields.items() if key != section}
 
-    async def set_datetime(call: ServiceCall) -> None:
-        await _run(call, "send_datetime", value=call.data.get("datetime"))
+async def async_refresh_service_descriptions(hass: HomeAssistant) -> None:
+    """Adapt the static services.yaml to the configured devices.
 
-    async def show_temperature(call: ServiceCall) -> None:
-        color = call.data.get("color")
-        await _run(
-            call, "show_temperature",
-            value=1 if call.data.get("fahrenheit") else 0,
-            color=list(color) if color else None,
-        )
+    The device field becomes a picker of the configured devices, the clock,
+    white noise and lyrics sections follow their device types, and clock_id
+    offers the Divoom catalog once it has loaded.
+    """
+    domainConfig = hass.data.setdefault(DOMAIN, {})
+    descriptions = domainConfig.get('descriptions')
+    if descriptions is None:
+        descriptions = await hass.async_add_executor_job(load_yaml_dict, SERVICES_YAML)
+        domainConfig['descriptions'] = descriptions
 
-    async def set_weather(call: ServiceCall) -> None:
-        weather = call.data.get("weather")
-        if isinstance(weather, str) and not weather.isdigit():
-            weather = WEATHER_MODES.get(weather)
-        elif weather is not None:
-            weather = int(weather)
-        await _run(call, "send_weather", value=call.data.get("temperature"), weather=weather)
+    entries = hass.config_entries.async_entries(DOMAIN)
+    types = {entry.data.get(CONF_DEVICE_TYPE) for entry in entries}
+    clocks = domainConfig.get('clocks')
+    if types & CLOCK_ID_TYPES and clocks is None and 'clocks_task' not in domainConfig:
+        domainConfig['clocks_task'] = hass.async_create_background_task(_load_clock_options(hass), "divoom clock catalog", eager_start=False)
 
-    async def set_alarm(call: ServiceCall) -> None:
-        await _run(
-            call, "show_alarm",
-            number=call.data.get("number", 0),
-            time=call.data.get("time"),
-            weekdays=call.data.get("weekdays"),
-            alarmMode=call.data.get("alarmmode"),
-            triggerMode=call.data.get("triggermode"),
-            frequency=call.data.get("frequency"),
-            volume=call.data.get("volume"),
-        )
+    selector = _dropdown(_device_options(hass), custom_value=False) # shows the title once picked
 
-    async def set_memorial(call: ServiceCall) -> None:
-        await _run(
-            call, "show_memorial",
-            number=call.data.get("number", 0),
-            value=call.data.get("datetime"),
-            text=call.data.get("text"),
-            animate=True,
-        )
-
-    async def send_raw(call: ServiceCall) -> None:
-        raw = call.data["raw"]
-        if isinstance(raw, str):
-            raw = [int(part, 16) for part in raw.replace(",", " ").split()]
-        await _run(call, "send_command", command=raw[0], args=raw[1:])
-
-    services = {
-        "show_image": show_image,
-        "show_text": show_text,
-        "show_clock": show_clock,
-        "show_effects": show_effects,
-        "show_visualization": show_visualization,
-        "show_design": show_design,
-        "show_lyrics": show_lyrics,
-        "show_scoreboard": show_scoreboard,
-        "show_timer": show_timer,
-        "show_countdown": show_countdown,
-        "show_noise": show_noise,
-        "show_radio": show_radio,
-        "show_sleep": show_sleep,
-        "show_temperature": show_temperature,
-        "show_equalizer": show_equalizer,
-        "play_game": play_game,
-        "game_control": game_control,
-        "set_keyboard": set_keyboard,
-        "set_playstate": set_playstate,
-        "set_datetime": set_datetime,
-        "set_weather": set_weather,
-        "set_alarm": set_alarm,
-        "set_memorial": set_memorial,
-        "send_raw": send_raw,
-    }
-
-    for name, handler in services.items():
-        hass.services.async_register(DOMAIN, name, handler)
+    for mode, description in descriptions.items():
+        fields = description.get("fields", {})
+        if entries:
+            fields = {**fields, CONF_DEVICE: {**fields[CONF_DEVICE], "selector": selector}}
+            if mode == "clock": fields = _clock_fields(fields, types, clocks)
+            if mode == "sleep": fields = _drop_section(fields, "whitenoise", types, WHITENOISE_TYPES)
+            if mode == "lyrics": fields = _drop_section(fields, "style", types, LYRIC_CONFIG_TYPES)
+        async_set_service_schema(hass, DOMAIN, mode, {**description, "fields": fields})
