@@ -157,8 +157,8 @@ what creates the device and its entities.
    cannot resolve is the single most common way to end up with a device that accepts every command
    and does nothing.
 
-3. **Got it wrong?** *Settings → Devices & Services → Divoom → ⋮ → **Reconfigure*** changes the host,
-   channel and device type in place, keeping your entity IDs. *Download diagnostics* on the same
+3. **Got it wrong?** *Settings → Devices & Services → Divoom → ⋮ → **Reconfigure*** switches between the
+   gateway and direct Bluetooth and changes the host, channel and device type in place, keeping your entity IDs. *Download diagnostics* on the same
    menu states plainly whether the device is being reached through the gateway or through Home
    Assistant's own Bluetooth adapter.
 
@@ -167,14 +167,15 @@ what creates the device and its entities.
 | Entity | What it does |
 | --- | --- |
 | **Light** | The light channel: full RGB and brightness. |
-| **Clock** | The colour and brightness of the clock face. Turning it off deactivates the clock, not the display. |
+| **Clock** | The colour and brightness of the clock face. Turning it off deactivates the clock, not the display. Not on the FlowToo, MiniToo or Tiivoo 2, whose clock takes a face id instead. |
 | **Clock style** | The clock faces and the music visualisers (see below). |
 | **Channel** | Clock, light, effects, visualisation, design, lyrics. |
 | **Brightness**, **Volume** | Device brightness and speaker volume. |
 | **Buttons** | Device-specific extras: keyboard, equaliser and so on. |
 
 Plus the full set of Divoom actions from upstream: text, images, GIFs, scoreboards, countdowns,
-alarms, noise meter, radio, and the rest.
+alarms, noise meter, radio, and the rest. The actions use upstream's names (`divoom.clock`, not
+`divoom.show_clock`); [UPSTREAM.md](UPSTREAM.md) lists the renames for older automations.
 
 **About the clock styles.** The names Divoom's app uses do not match what the device renders, so
 these were checked by hand against a Ditoo Pro: index 1 is the *negative* fullscreen face, not the

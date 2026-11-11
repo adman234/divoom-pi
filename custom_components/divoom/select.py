@@ -15,6 +15,7 @@ from .const import (
     CHANNEL_LIGHT,
     CHANNEL_LYRICS,
     CHANNEL_VISUALIZATION,
+    CLOCK_ID_DEVICE_TYPES,
     CLOCK_STYLES,
     DEVICE_CAPABILITIES,
     DOMAIN,
@@ -32,7 +33,11 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Divoom selects from a config entry."""
     hub: DivoomHub = hass.data[DOMAIN]["hubs"][entry.entry_id]
-    async_add_entities([DivoomChannelSelect(hub), DivoomClockStyleSelect(hub)])
+    entities = [DivoomChannelSelect(hub)]
+    # clock-id models pick a clock face by id and ignore style and colour
+    if hub.device_type not in CLOCK_ID_DEVICE_TYPES:
+        entities.append(DivoomClockStyleSelect(hub))
+    async_add_entities(entities)
 
 
 class DivoomChannelSelect(DivoomEntity, SelectEntity):
@@ -48,6 +53,9 @@ class DivoomChannelSelect(DivoomEntity, SelectEntity):
 
         capabilities = DEVICE_CAPABILITIES.get(hub.device_type, {})
         options = [CHANNEL_CLOCK, CHANNEL_LIGHT, CHANNEL_EFFECTS, CHANNEL_VISUALIZATION, CHANNEL_DESIGN]
+        if hub.device_type in CLOCK_ID_DEVICE_TYPES:
+            # their clock needs a clock id, which the divoom.clock action takes
+            options.remove(CHANNEL_CLOCK)
         if capabilities.get("lyrics"):
             options.append(CHANNEL_LYRICS)
         self._attr_options = options

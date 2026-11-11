@@ -7,6 +7,8 @@ ENTITY_PLATFORMS = [Platform.LIGHT, Platform.SELECT, Platform.NUMBER, Platform.B
 
 DOMAIN: Final = "divoom"
 
+CONF_ADAPTER: Final = 'adapter'
+CONF_DEVICE: Final = 'device'
 CONF_DEVICE_TYPE: Final = 'device_type'
 CONF_MEDIA_DIR: Final = 'media_directory'
 CONF_MEDIA_DIR_DEFAULT: Final = "pixelart"
@@ -24,6 +26,11 @@ DEVICE_CAPABILITIES: Final = {
     "timeboxmini": {"audio": True,  "keyboard": False, "lyrics": False},
     "timoo":       {"audio": True,  "keyboard": False, "lyrics": True},
     "tivoo":       {"audio": True,  "keyboard": False, "lyrics": True},
+    # 128x128 models (Divoom128 base): untested here, flags follow upstream's
+    # implementation, which has volume and lyrics but no keyboard
+    "flowtoo":     {"audio": True,  "keyboard": False, "lyrics": True},
+    "minitoo":     {"audio": True,  "keyboard": False, "lyrics": True},
+    "tiivoo2":     {"audio": True,  "keyboard": False, "lyrics": True},
 }
 
 DEVICE_MODEL_NAMES: Final = {
@@ -37,7 +44,15 @@ DEVICE_MODEL_NAMES: Final = {
     "timeboxmini": "Timebox Mini",
     "timoo": "Timoo",
     "tivoo": "Tivoo",
+    "flowtoo": "FlowToo",
+    "minitoo": "MiniToo",
+    "tiivoo2": "Tiivoo 2",
 }
+
+# Models whose show_clock selects a clock face by id (Channel/SetClockSelectId)
+# and ignores style and colour, so the clock light and clock style select do
+# not apply to them. Mirrors CLOCK_ID_TYPES in services.py.
+CLOCK_ID_DEVICE_TYPES: Final = {"flowtoo", "minitoo", "tiivoo2"}
 
 # channels selectable through the channel select entity
 CHANNEL_CLOCK: Final = "clock"

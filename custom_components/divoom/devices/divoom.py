@@ -5,13 +5,57 @@ from PIL import Image, ImageDraw, ImageFont
 
 TEMPERATURE_PATTERN = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)?\s*°?\s*([CF])?\s*$", re.IGNORECASE)
 
+def _sdp_rfcomm_channel(data):
+    """Returns the first RFCOMM channel found in SDP attribute lists, or None."""
+    def elements(data):
+        index = 0
+        while index < len(data):
+            kind, size = data[index] >> 3, data[index] & 7
+            index += 1
+            if kind == 0: size = 0
+            elif size < 5: size = 1 << size
+            else:
+                length = 1 << (size - 5)
+                if index + length > len(data): raise ValueError
+                size = int.from_bytes(data[index:index + length], "big")
+                index += length
+            if index + size > len(data): raise ValueError
+            yield kind, data[index:index + size]
+            index += size
+
+    def search(data):
+        items = list(elements(data))
+        for number, (kind, value) in enumerate(items):
+            # the protocol descriptor RFCOMM (uuid 0x0003) is followed by its channel as uint8
+            if kind == 3 and value == b"\x00\x03" and number + 1 < len(items) and items[number + 1][0] == 1 and len(items[number + 1][1]) == 1:
+                return items[number + 1][1][0]
+            if kind == 6 or kind == 7:
+                channel = search(value)
+                if channel != None: return channel
+        return None
+
+    try:
+        return search(bytes(data))
+    except ValueError:
+        return None
+
+class DivoomUnsupportedError(Exception):
+    """Raised when a device cannot do what a mode asks of it."""
+
+    def __init__(self, device, feature):
+        self.device = device
+        self.feature = feature
+        Exception.__init__(self, "{0}: {1}".format(device, feature))
+
 class Divoom:
     """Class Divoom encapsulates the Divoom Bluetooth communication."""
-    
+
     COMMANDS = {
+        "set json": 0x01,
         "set radio": 0x05,
         "set volume": 0x08,
         "set playstate": 0x0a,
+        "set playtrack": 0x12,
         "set game keydown": 0x17,
         "set date time": 0x18,
         "set game keyup": 0x21,
@@ -34,20 +78,35 @@ class Divoom:
         "set tool": 0x72,
         "set brightness": 0x74,
         "set game keypress": 0x88,
+        "set gif": 0x8b,
         "set game": 0xa0,
         "set design": 0xbd,
     }
 
+    SOURCES = {
+        "bluetooth": 0x00,
+        "fm": 0x01,
+        "linein": 0x02,
+        "sdcard": 0x03,
+        "usb": 0x07,
+    }
+
     escapePayload = False
+    senddelay = 0
+    maxframes = 60
+    adapter = None
     host = None
     mac = None
     port = 1
+    autoport = None
+    fallbackport = 1
 
-    def __init__(self, host=None, mac=None, port=1, escapePayload=False, logger=None):
+    def __init__(self, adapter=None, host=None, mac=None, port=1, escapePayload=False, logger=None):
         self.socket = None
         self.socket_errno = 0
         self.message_buf = []
 
+        self.adapter = adapter if adapter else None
         self.host = host if host else None
         self.mac = mac
         self.port = port
@@ -56,6 +115,16 @@ class Divoom:
         if logger is None:
             logger = logging.getLogger(self.type)
         self.logger = logger
+
+    def unsupported(self, feature):
+        """Refuse a feature this device does not have"""
+        self.logger.warning("{0}: this device does not support {1}.".format(self.type, feature))
+        raise DivoomUnsupportedError(self.type, feature)
+
+    def unimplemented(self):
+        """Refuse a feature that is not implemented for this device yet"""
+        self.logger.warning("{0}: the implementation is missing.".format(self.type))
+        raise DivoomUnsupportedError(self.type, "the implementation is missing")
 
     def __del__(self):
         self.disconnect()
@@ -77,7 +146,7 @@ class Divoom:
         return [0x00, 0x00]
 
     def _parse_temperature(self, value):
-        """Split "25°C" into the number 25.0 and the unit flag (0 = °C, 1 = °F).
+        """Split "25°C" into the number 25.0 and the unit flag 1 (0 = °C, 1 = °F).
         Both parts are optional, an unparsable value gives (None, None)."""
         if value == None: return None, None
         if isinstance(value, bool): return float(value), None
@@ -96,9 +165,17 @@ class Divoom:
         if (self.socket == None):
             try:
                 if (self.host == None):
-                    self.socket = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-                    self.socket.settimeout(timeout)
-                    self.socket.connect((self.mac, self.port))
+                    sdp = None
+                    port = self.port or self.autoport
+                    if not port: sdp, port = self.discover_port(timeout)
+                    try:
+                        self.socket = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+                        self.socket.settimeout(timeout)
+                        if (self.adapter != None): self.socket.bind((self.adapter, 0))
+                        self.socket.connect((self.mac, port or self.fallbackport))
+                        time.sleep(0.5)
+                    finally:
+                        if (sdp != None): sdp.close()
                 else:
                     self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
                     self.socket.settimeout(timeout)
@@ -107,27 +184,61 @@ class Divoom:
                 self.socket.settimeout(3)
                 self.socket_errno = 0
             except socket.error as error:
-                self.socket_errno = error.errno
-                self.socket = None
-            except IOError as error:
-                if error.errno == errno.EPIPE:
-                    self.socket_errno = error.errno
+                self.socket_errno = error.errno or errno.ETIMEDOUT
                 self.socket = None
 
         if (self.socket != None and self.host != None):
             time.sleep(0.5)
             conn = [0x69]
             conn += bytearray.fromhex(self.mac.replace(':', ''))
-            conn += [self.port]
+            port = self.port or self.autoport
+            conn += [port] if port else [0x00, self.fallbackport]
             try:
                 self.socket.sendall(bytes(conn))
             except socket.error as error:
-                self.socket_errno = error.errno
+                self.socket_errno = error.errno or errno.ETIMEDOUT
                 self.socket = None
-            except IOError as error:
-                if error.errno == errno.EPIPE:
-                    self.socket_errno = error.errno
-                self.socket = None
+
+    def discover_port(self, timeout=10):
+        """Looks up the RFCOMM channel of the serial port service via SDP. Returns the still open SDP socket and the channel."""
+        sdp = None
+        channel = None
+        try:
+            sdp = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)
+            sdp.settimeout(timeout)
+            if (self.adapter != None): sdp.bind((self.adapter, 0))
+            sdp.connect((self.mac, 1))
+
+            # service search attribute request:
+            # serial port uuid 0x1101
+            # attribute 0x0004
+            # continuation state
+            data = b""
+            continuation = b"\x00"
+            for transaction in range(1, 17):
+                params = bytes([0x35, 0x03, 0x19, 0x11, 0x01, 0xff, 0xff, 0x35, 0x03, 0x09, 0x00, 0x04]) + continuation
+                sdp.sendall(bytes([0x06]) + transaction.to_bytes(2, "big") + len(params).to_bytes(2, "big") + params)
+
+                response = sdp.recv(65535)
+                if len(response) < 7 or response[0] != 0x07: break
+                count = int.from_bytes(response[5:7], "big")
+                data += response[7:7 + count]
+                continuation = response[7 + count:]
+                if not continuation or continuation[0] == 0: break
+
+            channel = _sdp_rfcomm_channel(data)
+        except socket.error as error:
+            if (sdp != None): sdp.close()
+            self.logger.warning("{0}: could not look up the port via SDP ({1}), using port {2}.".format(self.type, error, self.fallbackport))
+            return None, None
+
+        if channel == None:
+            sdp.close()
+            self.logger.warning("{0}: no port found via SDP, using port {1}.".format(self.type, self.fallbackport))
+            return None, None
+
+        self.logger.debug("{0}: found port {1} via SDP.".format(self.type, channel))
+        return sdp, channel
 
     def disconnect(self):
         """Closes the connection to the Divoom device."""
@@ -147,54 +258,50 @@ class Divoom:
             self.socket = None
 
     def reconnect(self, skipPing=None):
-        """Reconnects the connection to the Divoom device, if needed."""
+        """Reconnects the connection to the Divoom device, if needed. Returns False after giving up."""
 
-        try:
-            if (self.socket == None):
-                self.connect()
-                time.sleep(0.5)
+        retries = 0
+        while True:
+            fresh = self.socket == None
+            self.socket_errno = 0
+            try:
+                if fresh:
+                    self.connect(10 if retries == 0 else 3)
+                    if (self.host != None): time.sleep(0.5)
 
-            if skipPing != True and self.socket != None:
-                ping = self.send_ping()
-                if (self.host != None and not isinstance(ping, int) and list(ping)[-1] == 0x69):
-                    time.sleep(0.5)
-                    ping = self.send_ping()
-                if (self.host != None and not isinstance(ping, int) and list(ping)[-1] == 0x69):
-                    time.sleep(1)
-                    ping = self.send_ping()
-                if (self.host != None and not isinstance(ping, int) and list(ping)[-1] == 0x96):
-                    self.socket_errno = 696
-        except socket.error as error:
-            self.socket_errno = error.errno
-        except IOError as error:
-            if error.errno == errno.EPIPE:
-                self.socket_errno = error.errno
+                if skipPing != True:
+                    timeout = 0.2 if self.host == None else 10 if fresh else 2
+                    ping = self.send_ping(timeout)
+                    if (self.host != None and not isinstance(ping, int) and list(ping)[-1] == 0x69):
+                        time.sleep(0.5)
+                        ping = self.send_ping(timeout)
+                    if (self.host != None and not isinstance(ping, int) and list(ping)[-1] == 0x69):
+                        time.sleep(1)
+                        ping = self.send_ping(timeout)
+                    if (self.host != None and not isinstance(ping, int) and list(ping)[-1] == 0x96):
+                        self.socket_errno = 696
+            except socket.error as error:
+                self.socket_errno = error.errno or errno.ETIMEDOUT
 
-        # Any non-zero errno is a failure. This used to test "> 0", which
-        # silently ignored socket.gaierror: a hostname that does not resolve
-        # raises it with a *negative* errno (-2 EAI_NONAME), so a mistyped or
-        # unresolvable gateway host skipped the retry loop, logged nothing at
-        # all, and left send_payload() returning early on a None socket. The
-        # symptom was a device that accepted every command and did nothing,
-        # with not one line in the log.
-        retries = 1
-        while self.socket_errno != None and self.socket_errno != 0 and retries <= 5:
+            # any non-zero errno is a failure: socket.gaierror carries a negative
+            # one (e.g. -2 for a gateway hostname that does not resolve)
+            if self.socket_errno == None or self.socket_errno == 0:
+                return True
+            if retries >= 3:
+                self.logger.error("{0}: giving up on {1} after {3} attempts (errno = {2}). If this is a gateway hostname, check that it resolves - try its IP address, or add .local".format(self.type, self.host or self.mac, self.socket_errno, retries))
+                return False
+
+            retries += 1
             self.logger.warning("{0}: connection to {1} lost (errno = {2}). Trying to reconnect for the {3} time.".format(self.type, self.host or self.mac, self.socket_errno, retries))
-            if retries > 1:
-                time.sleep(1 * retries)
 
             self.disconnect()
-            self.connect()
-            retries += 1
+            time.sleep(1 * retries)
 
-        if self.socket_errno != None and self.socket_errno != 0:
-            self.logger.error("{0}: giving up on {1} after {3} attempts (errno = {2}). If this is a gateway hostname, check that it resolves - try its IP address, or add .local".format(self.type, self.host or self.mac, self.socket_errno, retries - 1))
-
-    def receive(self, num_bytes=1024):
+    def receive(self, num_bytes=1024, timeout=0.2):
         """Receive n bytes of data from the Divoom device and put it in the input buffer. Returns the number of bytes received."""
         if (self.socket == None): return 0
 
-        ready = select.select([self.socket], [], [], 0.2)
+        ready = select.select([self.socket], [], [], timeout)
         if ready[0]:
             try:
                 data = self.socket.recv(num_bytes)
@@ -202,29 +309,16 @@ class Divoom:
                 return len(data)
             except socket.error as error:
                 self.socket_errno = error.errno
-            except IOError as error:
-                if error.errno == errno.EPIPE:
-                    self.socket_errno = error.errno
         return 0
 
-    def send_raw(self, data):
-        """Send raw data to the Divoom device."""
-        if (self.socket == None): return
+    def send_raw(self, data, skipRead=None, timeout=0.2):
+        """Send a raw command to the Divoom device, data[0] being the command and the rest its arguments."""
+        if not data: return 0
+        return self.send_command(command=data[0], args=list(data[1:]), skipRead=skipRead, timeout=timeout)
 
-        try:
-            self.socket.sendall(data)
-            return len(data)
-        except socket.error as error:
-            self.socket_errno = error.errno
-            raise
-        except IOError as error:
-            if error.errno == errno.EPIPE:
-                self.socket_errno = error.errno
-            raise
-
-    def send_command(self, command, args=None, skipRead=None):
+    def send_command(self, command, args=None, skipRead=None, timeout=0.2):
         """Send command with optional arguments"""
-        if (self.socket == None): return
+        if (self.socket == None): return 0
 
         if args is None:
             args = []
@@ -235,47 +329,55 @@ class Divoom:
         payload += length.to_bytes(2, byteorder='little')
         payload += [command]
         payload += args
-        return self.send_payload(payload, skipRead=skipRead)
+        return self.send_payload(payload, skipRead=skipRead, timeout=timeout)
 
-    def send_payload(self, payload, skipRead=None):
-        """Send raw payload to the Divoom device. (Will be escaped, checksumed and messaged between 0x01 and 0x02."""
-        if (self.socket == None): return
+    def send_payload(self, payload, skipRead=None, timeout=0.2):
+        """Send raw payload to the Divoom device. (Will be escaped, checksummed and messaged between 0x01 and 0x02.)"""
+        if (self.socket == None): return 0
 
         result = 0
         request = self.make_message(payload)
-        ready = select.select([], [self.socket], [], 0.1)
+        ready = select.select([], [self.socket], [], 3)
         if ready[1]:
             try:
-                self.logger.debug("{0} PAYLOAD OUT: {1}".format(self.type, ' '.join([hex(b) for b in request])))
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug("{0} PAYLOAD OUT: {1}".format(self.type, ' '.join([hex(b) for b in request])))
                 self.socket.sendall(bytes(request))
                 result = len(request)
             except socket.error as error:
                 self.socket_errno = error.errno
                 raise
-            except IOError as error:
-                if error.errno == errno.EPIPE:
-                    self.socket_errno = error.errno
-                raise
         else:
             self.socket_errno = 98
-            self.logger.warning("{0}: socket not writable, dropping payload".format(self.type))
-            return result
+            self.logger.error("{0}: socket not writable, aborting".format(self.type))
+            raise TimeoutError("{0}: socket not writable".format(self.type))
 
+        if self.senddelay: time.sleep(self.senddelay)
         if skipRead == False or (skipRead == None and self.logger.isEnabledFor(logging.DEBUG)):
-            ready = select.select([self.socket], [], [], 0.2)
+            ready = select.select([self.socket], [], [], timeout)
             if ready[0]:
-                response = self.socket.recv(1024)
+                try:
+                    response = self.socket.recv(1024)
+                except socket.error as error:
+                    self.socket_errno = error.errno
+                    raise
                 self.logger.debug("{0} PAYLOAD IN: {1}".format(self.type, ' '.join([hex(b) for b in response])))
                 return response or result
     
         return result
 
     def drop_message_buffer(self):
-        """Drop all dat currently in the message buffer,"""
+        """Drop all data currently in the message buffer."""
         self.message_buf = []
     
+    def animation_fits(self, frames):
+        """Whether the frames fit the size and chunk index fields of make_framepart."""
+        size = sum(pair[1] for pair in frames)
+        wide = self.screensize == 32 # Pixoo-Max expects more
+        return size < (1 << (32 if wide else 16)) and -(-size // self.chunksize) <= (1 << (16 if wide else 8))
+
     def checksum(self, payload):
-        """Compute the payload checksum. Returned as list with LSM, MSB"""
+        """Compute the payload checksum. Returned as list with LSB, MSB"""
         length = sum(payload)
         csum = []
         csum += length.to_bytes(4 if length >= 65535 else 2, byteorder='little') # Pixoo-Max expects more sometimes
@@ -291,6 +393,59 @@ class Divoom:
         result += color[0].to_bytes(1, byteorder='big')
         result += color[1].to_bytes(1, byteorder='big')
         result += color[2].to_bytes(1, byteorder='big')
+        return result
+
+    def encode_frames(self, decoded, needsFlags):
+        """Encode (pixels, colors, colorCount, time) frames, thinned out evenly beyond maxframes
+        or animation_fits. Kept frames last as long as the frames they replace."""
+        count = len(decoded)
+        result = []
+        if needsFlags: # Pixoo-Max expects two empty frames with flags 0x05 and 0x06 at the start
+            result.append(self.make_frame([0x00, 0x00, 0x05, 0x00, 0x00]))
+            result.append(self.make_frame([0x00, 0x00, 0x06, 0x00, 0x00, 0x00]))
+
+        frames = [self.make_frame(self.process_frame(pixels, colors, colorCount, count, time, needsFlags))
+            for pixels, colors, colorCount, time in decoded]
+        keep = min(count, self.maxframes)
+        while keep > 1 and not self.animation_fits(result + [frames[i] for i in self.pick_frames(count, keep)]):
+            keep -= 1 # the frame time does not affect the size, so the encoded frames can be checked as they are
+        if keep == count: return [result + frames, count]
+
+        self.logger.warning("{0}: animation has {1} frames, keeping {2}".format(self.type, count, keep))
+        picks = self.pick_frames(count, keep) + [count]
+        for start, end in zip(picks, picks[1:]):
+            pixels, colors, colorCount, _ = decoded[start]
+            time = min(0xffff, sum(frame[3] for frame in decoded[start:end]))
+            result.append(self.make_frame(self.process_frame(pixels, colors, colorCount, keep, time, needsFlags)))
+        return [result, keep]
+
+    def send_frames(self, frames, framesCount):
+        """Send encoded frames as image or animation"""
+        result = None
+        if framesCount > 1:
+            """Sending as Animation"""
+            frameParts = []
+            framePartsSize = 0
+
+            for pair in frames:
+                frameParts += pair[0]
+                framePartsSize += pair[1]
+
+            index = 0
+            for framePart in self.chunks(frameParts, self.chunksize):
+                frame = self.make_framepart(framePartsSize, index, framePart)
+                result = self.send_command("set animation frame", frame, skipRead=True)
+                if not result:
+                    raise OSError(errno.ENOTCONN, "{0}: transfer truncated after {1} chunks".format(self.type, index))
+                index += 1
+
+        elif framesCount == 1:
+            """Sending as Image"""
+            pair = frames[-1]
+            frame = self.make_framepart(pair[1], -1, pair[0])
+            result = self.send_command("set image", frame, skipRead=True)
+            if not result:
+                raise OSError(errno.ENOTCONN, "{0}: frame not sent".format(self.type))
         return result
 
     def escape_payload(self, payload):
@@ -329,8 +484,12 @@ class Divoom:
             header += [0x00, 0x0A, 0x0A, 0x04] # Fixed header on single frames
         return header + framePart
 
+    def pick_frames(self, count, keep):
+        """Indices of keep frames spread evenly over count frames."""
+        return [i * count // keep for i in range(keep)]
+
     def process_image(self, image, time=None):
-        frames = []
+        decoded = []
         with Image.open(image) as img:
             
             picture_frames = []
@@ -358,7 +517,6 @@ class Divoom:
             except EOFError:
                 pass
             
-            framesCount = len(picture_frames)
             for pair in picture_frames:
                 picture_frame = pair[0]
                 picture_time = pair[1]
@@ -378,32 +536,22 @@ class Divoom:
                         color_index = len(colors)
                         palette_index[color_t] = color_index
                         colors.append(color)
-                    pixels[x + frameSize[1] * y] = color_index
-                
+                    pixels[x + frameSize[0] * y] = color_index
+
                 if picture_time is None: picture_time = 0
-                
+
                 colorCount = len(colors)
-                if colorCount >= (frameSize[0] * frameSize[1]): colorCount = 0
+                if not needsFlags and colorCount >= 256: colorCount = 0
                 
-                frame = self.process_frame(pixels, colors, colorCount, framesCount, picture_time if time is None else time, needsFlags)
-                frames.append(frame)
+                decoded.append((pixels, colors, colorCount, picture_time if time is None else time))
         
-        result = []
-
-        if needsFlags: # Pixoo-Max expects two empty frames with flags 0x05 and 0x06 at the start
-            result.append(self.make_frame([0x00, 0x00, 0x05, 0x00, 0x00]))
-            result.append(self.make_frame([0x00, 0x00, 0x06, 0x00, 0x00, 0x00]))
-
-        for frame in frames:
-            result.append(self.make_frame(frame))
-        
-        return [result, framesCount]
+        return self.encode_frames(decoded, needsFlags)
     
     def process_text(self, text, font, size=None, time=None, color1=None, color2=None):
         if color1 is None or len(color1) < 3: color1 = [0xff, 0xff, 0xff]
         if color2 is None or len(color2) < 3: color2 = [0x01, 0x01, 0x01]
 
-        frames = []
+        decoded = []
         picture_time = 50
         text_margin = 0 if size is None else int((self.screensize - size) / 2)
         text_speed_fast = int(math.ceil(self.screensize / 4))
@@ -441,15 +589,14 @@ class Divoom:
 
             text_speed = text_speed_slow
             framesCount = int(math.floor((img_width - self.screensize) / text_speed))
-            if framesCount > 60: # frames are limited, therefore we need to do bigger jumps
+            if framesCount > self.maxframes: # frames are limited, therefore we need to do bigger jumps
                 text_speed = text_speed_medium
                 picture_time = int(picture_time * (text_speed_medium / text_speed_slow))
                 framesCount = int(math.floor((img_width - self.screensize) / text_speed))
-                if framesCount > 60: # frames are limited, therefore we need to do even bigger jumps
+                if framesCount > self.maxframes: # frames are limited, therefore we need to do even bigger jumps
                     text_speed = text_speed_fast
                     picture_time = int(picture_time * (text_speed_fast / text_speed_medium))
                     framesCount = int(math.floor((img_width - self.screensize) / text_speed))
-            if framesCount > 60: self.logger.warning("{0}: text animation is too wide and is very likely cut off.".format(self.type))
 
             pix = img.load()
             for offset in range(framesCount):
@@ -467,24 +614,14 @@ class Divoom:
                         color_index = len(colors)
                         palette_index[color_t] = color_index
                         colors.append(color)
-                    pixels[x + frameSize[1] * y] = color_index
-                
+                    pixels[x + frameSize[0] * y] = color_index
+
                 colorCount = len(colors)
-                if colorCount >= (frameSize[0] * frameSize[1]): colorCount = 0
+                if not needsFlags and colorCount >= 256: colorCount = 0
 
-                frame = self.process_frame(pixels, colors, colorCount, framesCount, picture_time if time is None else time, needsFlags)
-                frames.append(frame)
+                decoded.append((pixels, colors, colorCount, picture_time if time is None else time))
         
-        result = []
-
-        if needsFlags: # Pixoo-Max expects two empty frames with flags 0x05 and 0x06 at the start
-            result.append(self.make_frame([0x00, 0x00, 0x05, 0x00, 0x00]))
-            result.append(self.make_frame([0x00, 0x00, 0x06, 0x00, 0x00, 0x00]))
-
-        for frame in frames:
-            result.append(self.make_frame(frame))
-        
-        return [result, framesCount]
+        return self.encode_frames(decoded, needsFlags)
     
     def process_frame(self, pixels, colors, colorCount, framesCount, time, needsFlags):
         timeCode = [0x00, 0x00]
@@ -525,9 +662,10 @@ class Divoom:
 
         return list(result)
 
-    def send_ping(self):
+    def send_ping(self, timeout=0.2):
         """Send a ping (actually it's requesting current view) to the Divoom device to check connectivity"""
-        return self.send_command("get view", [], skipRead=False)
+        if self.host != None: self.clear_input_buffer(0)
+        return self.send_command("get view", [], skipRead=False, timeout=timeout)
     
     def send_on(self):
         """Sets the display on of the Divoom device"""
@@ -554,7 +692,7 @@ class Divoom:
 
         if time != None:
             args += int(time[0:2]).to_bytes(1, byteorder='big')
-            args += int(time[3:]).to_bytes(1, byteorder='big')
+            args += int(time[3:5]).to_bytes(1, byteorder='big')
         else:
             args += [0x00, 0x00]
         if weekdays != None:
@@ -585,7 +723,7 @@ class Divoom:
         args += value.to_bytes(1, byteorder='big')
         return self.send_command("set brightness", args, skipRead=True)
 
-    def show_clock(self, clock=None, twentyfour=None, weather=None, temp=None, calendar=None, color=None, hot=None):
+    def show_clock(self, clock=None, clock_id=None, twentyfour=None, weather=None, temp=None, calendar=None, color=None, hot=None):
         """Show clock on the Divoom device in the color"""
         if clock == None: clock = 0
         if weather == None: weather = False
@@ -624,8 +762,9 @@ class Divoom:
         args = [0x03]
         args += (0x01 if value == True or value == 1 else 0x00).to_bytes(1, byteorder='big')
         if countdown != None:
+            countdown = countdown[-5:] # the optional leading "hh:" is not used
             args += int(countdown[0:2]).to_bytes(1, byteorder='big')
-            args += int(countdown[3:]).to_bytes(1, byteorder='big')
+            args += int(countdown[3:5]).to_bytes(1, byteorder='big')
         else:
             args += [0x00, 0x00]
         return self.send_command("set tool", args)
@@ -645,6 +784,7 @@ class Divoom:
         args += clock.hour.to_bytes(1, byteorder='big')
         args += clock.minute.to_bytes(1, byteorder='big')
         args += clock.second.to_bytes(1, byteorder='big')
+        args += (clock.isoweekday() % 7).to_bytes(1, byteorder='big')
         return self.send_command("set date time", args)
 
     def show_design(self, number=None):
@@ -670,7 +810,7 @@ class Divoom:
         return self.send_command("set view", args)
 
     def show_equalizer(self, number, audioMode=False, backgroundMode=False, streamMode=False):
-        self.logger.warning("{0}: the implementation is missing.".format(self.type))
+        self.unimplemented()
 
     def show_game(self, value=None):
         """Show game on the Divoom device"""
@@ -706,53 +846,33 @@ class Divoom:
     def show_image(self, file, time=None):
         """Show image or animation on the Divoom device"""
         frames, framesCount = self.process_image(file, time=time)
-        
-        result = None
-        if framesCount > 1:
-            """Sending as Animation"""
-            frameParts = []
-            framePartsSize = 0
-            
-            for pair in frames:
-                frameParts += pair[0]
-                framePartsSize += pair[1]
-            
-            index = 0
-            for framePart in self.chunks(frameParts, self.chunksize):
-                frame = self.make_framepart(framePartsSize, index, framePart)
-                result = self.send_command("set animation frame", frame, skipRead=True)
-                index += 1
-        
-        elif framesCount == 1:
-            """Sending as Image"""
-            pair = frames[-1]
-            frame = self.make_framepart(pair[1], -1, pair[0])
-            result = self.send_command("set image", frame, skipRead=True)
-        return result
+        return self.send_frames(frames, framesCount)
 
     def send_keyboard(self, value=None):
-        self.logger.warning("{0}: the implementation is missing.".format(self.type))
+        self.unimplemented()
 
-    def show_light(self, color, brightness=None, power=None):
+    def show_light(self, color, brightness=None, power=None, effect=None):
         """Show light on the Divoom device in the color"""
         if power == None: power = True
         if brightness == None: brightness = 100
         if isinstance(brightness, str): brightness = int(brightness)
+        if isinstance(effect, str): effect = int(effect)
+
+        hasColor = color is not None and len(color) >= 3
+        if effect == None: effect = 0 if hasColor else 1
 
         args = [0x01]
-        if color is None or len(color) < 3:
+        if not hasColor:
             args += [0xFF, 0xFF, 0xFF]
-            args += brightness.to_bytes(1, byteorder='big')
-            args += [0x01]
         else:
             args += self.convert_color(color)
-            args += brightness.to_bytes(1, byteorder='big')
-            args += [0x00]
+        args += brightness.to_bytes(1, byteorder='big')
+        args += effect.to_bytes(1, byteorder='big')
         args += [0x01 if power == True or power == 1 else 0x00, 0x00, 0x00, 0x00]
         return self.send_command("set view", args)
 
-    def show_lyrics(self):
-        self.logger.warning("{0}: the implementation is missing.".format(self.type))
+    def show_lyrics(self, effect=None, background=None):
+        self.unimplemented()
 
     def show_memorial(self, number=None, value=None, text=None, animate=True):
         """Show memorial tool on the Divoom device"""
@@ -790,18 +910,35 @@ class Divoom:
         return self.send_command("set tool", args)
 
     def send_playstate(self, value=None):
-        """Send play/pause state to the Divoom device"""
+        """Send play/pause state or a track change to the Divoom device"""
+        if isinstance(value, str):
+            if value == "previous": return self.send_playtrack(0)
+            elif value == "next": return self.send_playtrack(1)
+            elif value == "pause": value = False
+            elif value == "play": value = True
+
         args = []
         args += (0x01 if value == True or value == 1 else 0x00).to_bytes(1, byteorder='big')
         return self.send_command("set playstate", args)
 
-    def show_radio(self, value=None, frequency=None):
-        """Show radio on the Divoom device and optionally changes to the given frequency"""
+    def send_playtrack(self, value=None):
+        """Send the previous or next track to the Divoom device"""
         args = []
         args += (0x01 if value == True or value == 1 else 0x00).to_bytes(1, byteorder='big')
+        return self.send_command("set playtrack", args)
+
+    def show_radio(self, value=None, frequency=None):
+        """Show radio on the Divoom device, or switch to another audio source, and optionally changes to the given frequency"""
+        if isinstance(value, str) and value in self.SOURCES:
+            source = self.SOURCES[value]
+        else:
+            source = 0x01 if value == True or value == 1 else 0x00
+
+        args = []
+        args += source.to_bytes(1, byteorder='big')
         result = self.send_command("set radio", args)
 
-        if (value == True or value == 1) and frequency != None:
+        if source == self.SOURCES["fm"] and frequency != None:
             if isinstance(frequency, str): frequency = float(frequency)
 
             args = []
@@ -810,9 +947,9 @@ class Divoom:
         return result
 
     def show_scoreboard(self, blue=None, red=None):
-        self.logger.warning("{0}: the implementation is missing. it needs a decision, in which way the scoreboard can be accessed (set view or set tool).".format(self.type))
+        self.unimplemented() # needs a decision, in which way the scoreboard can be accessed (set view or set tool)
 
-    def show_sleep(self, value=None, sleeptime=None, sleepmode=None, volume=None, color=None, brightness=None, frequency=None):
+    def show_sleep(self, value=None, sleeptime=None, sleepmode=None, volume=None, color=None, brightness=None, frequency=None, volumes=None):
         """Show sleep mode on the Divoom device and optionally sets mode, volume, time, color, frequency and brightness"""
         if sleeptime == None: sleeptime = 120
         if sleepmode == None: sleepmode = 0
@@ -840,37 +977,12 @@ class Divoom:
         return self.send_command("set sleeptime", args)
 
     def show_temperature(self, value=None, color=None):
-        """Show temperature on the Divoom device in the color"""
-        result = self.show_clock(clock=None, twentyfour=None, weather=None, temp=True, calendar=None, color=color, hot=None)
-        self.send_command("set temp type", [0x01 if value == True or value == 1 else 0x00])
-        return result
+        self.unsupported("the temperature mode")
 
     def show_text(self, text, font, size=None, time=None, color1=None, color2=None):
-        """Show image or animation on the Divoom device"""
+        """Show scrolling text on the Divoom device"""
         frames, framesCount = self.process_text(text, font, size=size, time=time, color1=color1, color2=color2)
-        
-        result = None
-        if framesCount > 1:
-            """Sending as Animation"""
-            frameParts = []
-            framePartsSize = 0
-            
-            for pair in frames:
-                frameParts += pair[0]
-                framePartsSize += pair[1]
-            
-            index = 0
-            for framePart in self.chunks(frameParts, self.chunksize):
-                frame = self.make_framepart(framePartsSize, index, framePart)
-                result = self.send_command("set animation frame", frame, skipRead=True)
-                index += 1
-        
-        elif framesCount == 1:
-            """Sending as Image"""
-            pair = frames[-1]
-            frame = self.make_framepart(pair[1], -1, pair[0])
-            result = self.send_command("set image", frame, skipRead=True)
-        return result
+        return self.send_frames(frames, framesCount)
 
     def show_timer(self, value=None):
         """Show timer tool on the Divoom device"""
@@ -880,6 +992,9 @@ class Divoom:
         args = [0x00]
         args += value.to_bytes(1, byteorder='big')
         return self.send_command("set tool", args)
+
+    def show_signal(self, number, color1=None, color2=None):
+        self.unsupported("the signal mode")
 
     def show_visualization(self, number, color1, color2):
         """Show visualization on the Divoom device"""
@@ -900,12 +1015,12 @@ class Divoom:
         return self.send_command("set volume", args, skipRead=True)
 
     def send_weather(self, value=None, weather=None, unit=None):
-        """Send weather to the Divoom device. The value may be a number or text like "25°C"."""
+        """Send weather to the Divoom device"""
         number, parsedUnit = self._parse_temperature(value)
         if number == None: return
         if weather == None: weather = 0
         if isinstance(weather, str): weather = int(weather)
-
+        
         if unit == None: unit = parsedUnit
         elif isinstance(unit, str): unit = self._parse_temperature(unit)[1]
 
@@ -921,9 +1036,9 @@ class Divoom:
             self.send_command("set temp type", [0x01 if unit == 1 else 0x00])
         return result
 
-    def clear_input_buffer(self):
+    def clear_input_buffer(self, timeout=0.2):
         """Read all input from Divoom device and remove from buffer. """
-        while self.receive() > 0:
+        while self.receive(timeout=timeout) > 0:
             self.drop_message_buffer()
 
     def clear_input_buffer_quick(self):

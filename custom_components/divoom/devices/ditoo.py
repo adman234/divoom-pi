@@ -4,21 +4,27 @@ from .divoom import Divoom
 
 class Ditoo(Divoom):
     """Class Ditoo encapsulates the Ditoo Bluetooth communication."""
-    def __init__(self, host=None, mac=None, port=1, escapePayload=False, logger=None):
+    fallbackport = 2
+
+    def __init__(self, adapter=None, host=None, mac=None, port=1, escapePayload=False, logger=None):
         self.type = "Ditoo"
         self.screensize = 16
         self.chunksize = 200
         self.colorpalette = None
         if escapePayload == None: escapePayload = False
-        Divoom.__init__(self, host, mac, port, escapePayload, logger)
+        Divoom.__init__(self, adapter, host, mac, port, escapePayload, logger)
         
     def show_equalizer(self, number, audioMode=False, backgroundMode=False, streamMode=False):
-        self.logger.warning("{0}: this device does not support the music equalizer mode.".format(self.type))
+        self.unsupported("the music equalizer mode")
 
     def send_keyboard(self, value=None):
         """Send keyboard command on the Divoom device"""
         if value == None: return
-        if isinstance(value, str): value = int(value)
+        if isinstance(value, str):
+            if value == "previous": value = -1
+            elif value == "toggle": value = 0
+            elif value == "next": value = 1
+            else: value = int(value)
 
         if value == 0: # toggle keyboard
             args = [0x02]
@@ -30,8 +36,8 @@ class Ditoo(Divoom):
             args = [0x00]
             return self.send_command("set keyboard", args, skipRead=True)
 
-    def show_lyrics(self):
-        """Show lyrics on the Divoom device with specific score"""
+    def show_lyrics(self, effect=None, background=None):
+        """Show lyrics on the Divoom device"""
 
         args = [0x06, 0x00, 0x00, 0x00]
         return self.send_command("set view", args)

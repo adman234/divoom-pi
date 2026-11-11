@@ -20,7 +20,6 @@ from custom_components.divoom import light as light_module  # noqa: E402
 from custom_components.divoom import select as select_module  # noqa: E402
 from custom_components.divoom.const import CLOCK_STYLES  # noqa: E402
 from custom_components.divoom.hub import DivoomHub  # noqa: E402
-from custom_components.divoom.services import tristate  # noqa: E402
 
 MAC = "11:22:33:44:55:66"
 checks = []
@@ -31,9 +30,9 @@ def check(name, condition, detail=""):
     print("[%s] %s%s" % (" ok " if condition else "FAIL", name, "  " + detail if detail else ""))
 
 
-def make_hub():
+def make_hub(device_type="ditoo"):
     """A hub whose device calls are recorded instead of sent."""
-    hub = DivoomHub(ha_stubs.FakeHass(None), None, None, MAC, 2, False, name="Divoom Ditoo")
+    hub = DivoomHub(ha_stubs.FakeHass(None), MAC, device_type, name="Divoom Ditoo")
     hub.calls = []
 
     async def record(command, *args, **kwargs):
@@ -111,17 +110,29 @@ async def main():
           command == "show_clock" and kwargs["clock"] == 4 and kwargs["color"] == [0, 0, 255],
           str(kwargs))
 
-    # -- three-state service fields ------------------------------------------
-    check("'off' means off", tristate("off") is False)
-    check("'on' means on", tristate("on") is True)
-    check("unset stays unset", tristate(None) is None)
-    check("booleans still work", tristate(False) is False and tristate(True) is True)
-    check("nonsense is treated as unset", tristate("maybe") is None)
-
     # -- an untouched clock sends no colour at all ---------------------------
     hub = make_hub()
     await hub.async_apply_clock()
     check("an untouched clock sends no colour", hub.calls[-1][2]["color"] is None)
+
+    # -- clock-id models (FlowToo, MiniToo, Tiivoo 2) get no clock entities --
+    class FakeEntry:
+        entry_id = "abc123"
+
+    for device_type, expect_clock in (("ditoo", True), ("flowtoo", False)):
+        hub = make_hub(device_type)
+        hass = ha_stubs.FakeHass(None)
+        hass.data = {"divoom": {"hubs": {"abc123": hub}}}
+        added = []
+        await light_module.async_setup_entry(hass, FakeEntry(), added.extend)
+        await select_module.async_setup_entry(hass, FakeEntry(), added.extend)
+        names = sorted(type(entity).__name__ for entity in added)
+        has_clock = "DivoomClockLight" in names and "DivoomClockStyleSelect" in names
+        check("%s %s clock entities" % (device_type, "has" if expect_clock else "has no"),
+              has_clock is expect_clock, str(names))
+        channel = [entity for entity in added if type(entity).__name__ == "DivoomChannelSelect"][0]
+        check("%s channel select %s the clock" % (device_type, "offers" if expect_clock else "omits"),
+              ("clock" in channel._attr_options) is expect_clock, str(channel._attr_options))
 
     failed = len([c for c in checks if not c])
     print("\n%d checks, %d failed" % (len(checks), failed))
